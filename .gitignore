@@ -1,0 +1,62 @@
+# ───────────────────────────────────────────────────────────────
+# AFAC2026 Track 1 — .gitignore
+# Rule of thumb: commit CODE and DOCS, never DATA.
+# Self-sourced L2 data has uncertain provenance + large size → keep out of git.
+# ───────────────────────────────────────────────────────────────
+
+# --- Sourced / raw market data (NEVER commit) ---
+data/
+raw_data/
+*.parquet
+*.feather
+# Raw L2 dumps (xlsx/csv) that are sourced, not official samples.
+# NOTE: the small OFFICIAL sample files are allowed — force-add them explicitly:
+#   git add -f samples/AFAC2026.xlsx samples/stock-samples.xlsx \
+#             samples/predict_result.csv samples/pattern_reco.csv
+*.xlsx
+*.xls
+# Large sourced CSVs; official sample CSVs live in samples/ and are force-added.
+/*.csv
+src/**/*.csv
+
+# --- Model artifacts / outputs ---
+*.pkl
+*.joblib
+*.h5
+*.onnx
+models/
+checkpoints/
+outputs/
+submit/
+submit.zip
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Secrets / local config (data-source creds, API keys) ---
+.env
+.env.*
+secrets.*
+*.local
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# --- Logs ---
+*.log
+logs/
+submission_log*.csv

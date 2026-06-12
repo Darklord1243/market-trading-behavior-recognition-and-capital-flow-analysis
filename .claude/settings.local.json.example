@@ -1,0 +1,7 @@
+{
+  "forceLoginMethod": "claudeai",
+  "permissions": {
+    "allow": ["Read", "Glob", "Grep", "WebSearch", "Write(docs/plans/**)"],
+    "deny": ["Edit", "Bash"]
+  }
+}

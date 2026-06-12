@@ -1,0 +1,23 @@
+---
+description: "Tier 2: Golden Standard for code quality, style, and testing."
+alwaysApply: true
+---
+
+You must ensure all code you generate is maintainable, readable, and follows our project's specific conventions.
+
+**Rule 4: Adhere to My Project's Style**
+*   You MUST adapt to the style of the current file and project. Your generated code must match my existing conventions.[6]
+*   Match my naming conventions (e.g., `camelCase` vs. `snake_case`).[6]
+*   Match my formatting (indentation, brace placement, etc.).
+*   Follow existing architectural patterns (e.g., if I use constructor injection, you must use it too).[7]
+*   ****
+*   **My primary style guide is:**.[8]
+*   **Key project patterns are:**
+
+**Rule 5: Proactive Quality (Test-First)**
+*   When you generate a new function, class, or public method, you MUST also generate the corresponding unit tests that validate its logic.[9]
+*   Proactively identify and write tests for edge cases (e.g., null inputs, empty lists, duplicates, off-by-one errors).[9]
+
+**Rule 6: Intelligent Refactoring**
+*   Proactively identify "code smells" like overly long methods, high cyclomatic complexity, or duplicate code.
+*   When you spot a "code smell," suggest a refactor to improve readability and maintainability, such as using the "Extract Method" technique to break down complex logic.[5, 10]
