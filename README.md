@@ -11,7 +11,7 @@ Our solution for AFAC2026 Challenge Group, Track 1. Two coupled tasks per `(stoc
 
 Total score = `0.4 × Task1 + 0.6 × Task2`. Scored by silhouette/CH/Wasserstein/DTW (Task 1) and weighted F1 against T+5 market backtest (Task 2).
 
-The authoritative plan is **`docs/AFAC2026_Track1_Project_Brief.docx`** (Rev. 4). Read it before writing any code.
+The authoritative plan is **`docs/AFAC2026_Track1_Project_Brief.docx`** (Rev. 5). Read it before writing any code. Official Tianchi spec (incl. §7.2 Case 1): **`docs/competition-spec/`**.
 
 ## Hard-locked facts (do not re-litigate)
 
@@ -31,7 +31,8 @@ The official `predict_result.csv` sample uses **random labels** — read zero si
 .
 ├── docs/
 │   ├── AFAC2026_Track1_Project_Brief.docx   # single source of truth — read first
-│   └── official_guidance/                   # competition baseline, clarifications, tutorials
+│   ├── competition-spec/                    # official Tianchi spec (intro + track 1 + §7.2 Case 1)
+│   └── official_guidance/                   # baseline guide, FAQ/clarifications, tutorials
 ├── samples/              # small OFFICIAL sample files (force-added past .gitignore)
 ├── data/                 # sourced raw L2 — GITIGNORED, never committed
 ├── src/                  # pipeline modules (see brief §9)
