@@ -117,10 +117,14 @@ Produced (both UTF-8-sig, 4-col, all asserts pass):
    score leans quant. The brief treats Task-1 clusters only as a *sanity check* on
    Task-2, not a hard constraint — so this is acceptable for the skeleton. Tuned weights
    / cross-task reconciliation are future work.
-2. **"Case 1 / 24 ms CV / 70 % cancellation" anchor not used for tests.** Per
-   verification finding **U1**, no such case exists in any repo file; it was demoted in
-   brief Rev. 6. Feature unit tests are therefore anchored on a *constructed* synthetic
-   tick group with hand-computed expected values, not the retired Case-1 figures.
+2. **Case 1 exists; tests anchor on a synthetic group by design, not necessity.**
+   Case 1 ("Shrinking Volume Game") *is* present and cited in the repo —
+   `docs/competition-spec/topic-specifications-and-data.{en,zh}.md` §7.2 (恒工精密,
+   2026-04-28). It describes a **different stock** than the 603997.SH fixture, so its
+   figures cannot be asserted against the fixture's features. Feature unit tests are
+   therefore anchored on a *constructed* synthetic tick group with hand-computed
+   expected values — a deliberate engineering choice (deterministic, fixture-independent
+   arithmetic), not because Case 1 is missing.
 3. **Reference feature set is ~89 fields (competition-spec), baseline emits ~52–56.**
    This skeleton computes 31 features — the MVP subset needed for the rules + intent gate
    + clustering. Expanding toward the full reference set (RS/PD/OBP detail, the baseline's

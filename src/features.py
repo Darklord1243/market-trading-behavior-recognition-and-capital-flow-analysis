@@ -76,11 +76,19 @@ def _ap_features(group: pd.DataFrame) -> dict:
 
 
 def _pi_features(group: pd.DataFrame) -> dict:
-    """Period-Intraday session concentration using Beijing `hour`/`minute`."""
+    """Period-Intraday session concentration using the Beijing clock.
+
+    Beijing A-share continuous session: 09:30:00–11:30:00 and 13:00:00–15:00:00.
+    Open window = first 30 min [09:30, 10:00]; close window = last 10 min
+    [14:50, 15:00] — inclusive of 15:00:00 so the closing-auction prints count.
+    `hour`/`minute` are both derived from the Beijing-local clock (see ingest).
+    """
     hour, minute, amt = group["hour"], group["minute"], group["tick_amount"]
     total = amt.sum()
-    open_30 = ((hour == 9) & (minute >= 30)) | ((hour == 10) & (minute == 0))
-    close_10 = (hour == 14) & (minute >= 50)
+    # minutes-since-midnight makes the inclusive boundaries unambiguous.
+    mins = hour * 60 + minute
+    open_30 = (mins >= 9 * 60 + 30) & (mins <= 10 * 60)        # 09:30 .. 10:00
+    close_10 = (mins >= 14 * 60 + 50) & (mins <= 15 * 60)      # 14:50 .. 15:00 (incl 15:00)
     open_pct = _safe_div(amt[open_30].sum(), total)
     close_pct = _safe_div(amt[close_10].sum(), total)
     return {
@@ -94,7 +102,8 @@ def _pi_features(group: pd.DataFrame) -> dict:
 
 def _rs_features(group: pd.DataFrame) -> dict:
     """Rhythm/Sequence: inter-tick interval coefficient of variation + burst ratio."""
-    ts = group["datetime"].astype("int64") // 1_000_000  # ms
+    # interval diffs are timezone-invariant; use the UTC stamp for clarity.
+    ts = group["datetime_utc"].astype("int64") // 1_000_000  # ms
     intervals = ts.diff().dropna()
     intervals = intervals[intervals >= 0]
     if len(intervals) < 2:

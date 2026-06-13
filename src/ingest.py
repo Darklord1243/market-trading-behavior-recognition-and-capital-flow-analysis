@@ -76,16 +76,35 @@ def _normalise_and_clean(df: pd.DataFrame) -> pd.DataFrame:
 
     # --- canonical keys ---
     df["transaction_date"] = df["dt"].astype(str)                     # YYYYMMDD string
-    df["datetime"] = pd.to_datetime(df["date"], unit="ms")            # UTC epoch-ms
-    df["hour"] = df["hh"]                                             # Beijing hour (8-16)
-    df["minute"] = df["datetime"].dt.minute                          # offset is constant
+    # `date` is UTC epoch-ms. Build an explicit Beijing-local clock and derive BOTH
+    # hour and minute from it, so the session clock is internally consistent (the old
+    # code mixed Beijing `hh` with a UTC-derived minute). Keep the UTC stamp for
+    # ordering and for tz-invariant interval diffs (RS features).
+    df["datetime_utc"] = pd.to_datetime(df["date"], unit="ms")
+    df["datetime_bj"] = (
+        df["datetime_utc"].dt.tz_localize("UTC").dt.tz_convert("Asia/Shanghai")
+    )
+    df["hour"] = df["datetime_bj"].dt.hour      # cross-checked against `hh` below
+    df["minute"] = df["datetime_bj"].dt.minute
     df = df.rename(columns={"symbol": "stock_code"})
+
+    # Cross-check the derived Beijing hour against the provided `hh`; they should agree.
+    # If they ever diverge, prefer the official `hh` and log a warning.
+    if "hh" in df.columns:
+        mismatch = df["hour"].ne(df["hh"])
+        if mismatch.any():
+            log.warning(
+                "derived Beijing hour disagrees with `hh` on %d/%d rows; "
+                "preferring official `hh`",
+                int(mismatch.sum()), len(df),
+            )
+            df["hour"] = df["hh"]
 
     # --- cleaning: drop obviously invalid rows (baseline filter) ---
     df = df[(df["price"] > 0) & (df["volume"] >= 0) & (df["amount"] >= 0)]
 
     # --- temporal sort so cumulative fields are monotonic per group ---
-    df = df.sort_values(by=["stock_code", "transaction_date", "datetime"])
+    df = df.sort_values(by=["stock_code", "transaction_date", "datetime_utc"])
     df = df.reset_index(drop=True)
 
     # --- cumulative -> per-tick increments (Finding 1) ---

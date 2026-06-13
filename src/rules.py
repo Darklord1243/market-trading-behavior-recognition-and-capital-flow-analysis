@@ -26,19 +26,23 @@ from config import (
 # key to whether a HIGH value leans 游资 (hot money). Quant score is the complement.
 # Hot-money-leaning indices {large size, active buy, impact, time concentration} are
 # the baseline's documented 游资 signals (baseline-guide.md L392).
+# Each dim: (feature_key, hot_high, is_cb). `is_cb` marks dims derived from the
+# Cancel-Behaviour family, which are only valid when a tick-cancel table is present.
 SCORING_DIMS = [
-    ("oss_mega_amount_pct", True),       # 0 large size -> 游资
-    ("oss_small_amount_pct", False),     # 1 small size -> 量化
-    ("rs_burst_ratio", False),           # 2 rapid even cadence -> 量化
-    ("ap_active_buy_pct", True),         # 3 active buy -> 游资
-    ("rs_interval_cv", True),            # 4 bursty/irregular -> 游资
-    ("pd_max_price_impact_pct", True),   # 5 price impact -> 游资
-    ("pi_time_concentration", True),     # 6 time concentration -> 游资
-    ("ap_unilateral_intensity", True),   # 7 one-sided pressure -> 游资
-    ("obp_big_quote_share", True),       # 8 big resting quotes -> 游资
-    ("cb_sell_cancel_ratio", True),      # 9 sell-side cancels (spoofing) -> 游资
-    ("oss_mega_count_pct", True),        # 10 large-order frequency -> 游资
+    ("oss_mega_amount_pct", True, False),    # 0 large size -> 游资
+    ("oss_small_amount_pct", False, False),  # 1 small size -> 量化
+    ("rs_burst_ratio", False, False),        # 2 rapid even cadence -> 量化
+    ("ap_active_buy_pct", True, False),      # 3 active buy -> 游资
+    ("rs_interval_cv", True, False),         # 4 bursty/irregular -> 游资
+    ("pd_max_price_impact_pct", True, False),# 5 price impact -> 游资
+    ("pi_time_concentration", True, False),  # 6 time concentration -> 游资
+    ("ap_unilateral_intensity", True, False),# 7 one-sided pressure -> 游资
+    ("obp_big_quote_share", True, False),    # 8 big resting quotes -> 游资
+    ("cb_sell_cancel_ratio", True, True),    # 9 sell-side cancels (spoofing) -> 游资
+    ("oss_mega_count_pct", True, False),     # 10 large-order frequency -> 游资
 ]
+
+NEUTRAL = 0.5  # an absent feature casts no vote: +0.5 to BOTH scores
 
 
 def _clip01(x: float) -> float:
@@ -50,11 +54,24 @@ def score_capital_type(feat: dict) -> tuple[str, float, float]:
 
     Scores are normalised dimension sums; the label is the arg-max, matching the
     baseline's ``return '游资' if score_yz >= score_qt else '量化机构'``.
+
+    Absent features must vote NEUTRALLY, not as 0. A CB dim is "absent" when no
+    cancel table is present (`cb_available == 0.0`); any dim is absent when its key
+    is missing/NaN. An absent dim contributes 0.5 to BOTH scores so it never tilts
+    the result (e.g. the all-zero `cb_sell_cancel_ratio` on snapshot-only data must
+    not inject a constant +1.0 into the 游资 score).
     """
+    cb_available = float(feat.get("cb_available", 0.0)) > 0.0
     score_yz = 0.0
     score_qt = 0.0
-    for key, hot_high in SCORING_DIMS:
-        v = _clip01(float(feat.get(key, 0.0)))
+    for key, hot_high, is_cb in SCORING_DIMS:
+        raw = feat.get(key, None)
+        absent = (raw is None) or (raw != raw) or (is_cb and not cb_available)
+        if absent:
+            score_yz += NEUTRAL
+            score_qt += NEUTRAL
+            continue
+        v = _clip01(float(raw))
         if hot_high:
             score_yz += v
             score_qt += (1.0 - v)

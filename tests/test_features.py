@@ -1,10 +1,12 @@
 """Feature-function sanity tests on a deterministic synthetic tick group.
 
-NOTE on "Case 1": the brief's original "Case 1 / 24 ms CV / 70 % cancellation"
-anchor was found to be unsupported by any repo file (verification_report.md U1) and
-demoted in brief Rev. 6. These tests therefore anchor on a *constructed* tick group
-with hand-computed expected values — exact arithmetic the feature functions must
-reproduce — rather than on the retired Case-1 figures.
+NOTE on "Case 1": Case 1 ("Shrinking Volume Game") is cited in the repo at
+docs/competition-spec/topic-specifications-and-data.*.md §7.2 (恒工精密, 2026-04-28),
+but it describes a different stock than the 603997.SH fixture, so its figures cannot
+be asserted against the fixture. These tests therefore anchor on a *constructed* tick
+group with hand-computed expected values — deterministic, fixture-independent
+arithmetic the feature functions must reproduce — by design, not because Case 1 is
+missing.
 """
 
 import json
@@ -36,7 +38,7 @@ def synthetic_group():
         "tick_bigordervolume": [600, 0, 0, 0],
         "totalbidvolume": [1000, 1000, 1000, 1000],
         "totalaskvolume": [3000, 3000, 3000, 3000],
-        "datetime": pd.to_datetime(
+        "datetime_utc": pd.to_datetime(
             ["2026-05-07 01:30:00", "2026-05-07 02:00:00",
              "2026-05-07 05:00:00", "2026-05-07 06:55:00"]),
         # first-snapshot book: bid volume 1000 vs ask volume 3000 -> imbalance -0.5
@@ -91,3 +93,32 @@ def test_cb_graceful_degradation(synthetic_group):
 def test_all_features_finite(synthetic_group):
     f = compute_daily_features(synthetic_group, has_cancel_table=False)
     assert all(np.isfinite(v) for v in f.values())
+
+
+def test_pi_windows_use_beijing_clock_and_include_1500_close():
+    # Ticks placed at known BEIJING times: 09:35 (open), 11:00 (neither),
+    # 14:55 (close), 15:00 (close print). hour/minute are the Beijing clock.
+    g = pd.DataFrame({
+        "tick_volume": [1000, 1000, 1000, 1000],
+        "tick_amount": [100.0, 10.0, 30.0, 60.0],          # total 200
+        "price": [12.0, 12.1, 12.0, 12.1],
+        "price_change": [0.0, 0.1, -0.1, 0.1],
+        "hour": [9, 11, 14, 15],
+        "minute": [35, 0, 55, 0],
+        "tick_bigordervolume": [0, 0, 0, 0],
+        "totalbidvolume": [1000, 1000, 1000, 1000],
+        "totalaskvolume": [1000, 1000, 1000, 1000],
+        # corresponding UTC stamps (Beijing - 8h), monotonic for RS diffs
+        "datetime_utc": pd.to_datetime(
+            ["2026-05-07 01:35:00", "2026-05-07 03:00:00",
+             "2026-05-07 06:55:00", "2026-05-07 07:00:00"]),
+        "bids": [_book([1000])] * 4,
+        "asks": [_book([1000])] * 4,
+    })
+    f = compute_daily_features(g, has_cancel_table=False)
+    # open window [09:30,10:00] -> only the 09:35 tick (100/200)
+    assert f["pi_open_30min_amount_pct"] == pytest.approx(100 / 200)
+    # close window [14:50,15:00] inclusive -> 14:55 AND 15:00 prints ((30+60)/200)
+    # if 15:00 were excluded this would be 30/200 = 0.15, so this pins the boundary.
+    assert f["pi_close_10min_amount_pct"] == pytest.approx(90 / 200)
+    assert f["pi_time_concentration"] == pytest.approx(190 / 200)
