@@ -55,6 +55,8 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+# MS Office lock/temp files (e.g. ~$Brief.docx)
+~$*
 
 # --- Logs ---
 *.log
