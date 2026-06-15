@@ -1,0 +1,10 @@
+# AFAC2026 Track-1 — pinned-floor runtime dependencies
+# (baseline guide §11: Python >= 3.8; pandas, numpy, scikit-learn, openpyxl)
+pandas>=1.3
+numpy>=1.21
+scikit-learn>=1.0
+openpyxl>=3.0
+# Test runner
+pytest>=7.0
+# Stage-3 head (stubbed now; declared so the seam installs cleanly later)
+# lightgbm>=3.3

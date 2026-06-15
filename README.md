@@ -11,19 +11,25 @@ Our solution for AFAC2026 Challenge Group, Track 1. Two coupled tasks per `(stoc
 
 Total score = `0.4 × Task1 + 0.6 × Task2`. Scored by silhouette/CH/Wasserstein/DTW (Task 1) and weighted F1 against T+5 market backtest (Task 2).
 
-The authoritative plan is **`docs/AFAC2026_Track1_Project_Brief.docx`** (Rev. 5). Read it before writing any code. Official Tianchi spec (incl. §7.2 Case 1): **`docs/competition-spec/`**.
+The authoritative plan is **`docs/AFAC2026_Track1_Project_Brief.docx`** (Rev. 7). Read it before writing any code. Official Tianchi spec (incl. §7.2 Case 1): **`docs/competition-spec/`**.
 
 ## Hard-locked facts (do not re-litigate)
 
 | Field | Allowed values (emit these exact strings) |
 |---|---|
-| `capital_type` | `游资`, `量化机构` — **2 classes only** (note the `机构` suffix) |
+| `capital_type` | `游资`, `量化`, `散户` — **3 classes** (bare `量化`, **not** `量化机构`) |
 | `capital_intention` | `买入`, `卖出`, `T0交易` — 3 classes |
 | `pattern_type` | **Open** — label freely; scored on interpretability |
 | `transaction_date` | `YYYYMMDD` int; must equal **yesterday's trading day** at upload |
 | Encoding | UTF-8-sig; no nulls; no blank lines; exactly 4 columns, fixed order |
 
-The official `predict_result.csv` sample uses **random labels** — read zero signal from its values, only its format.
+The 3-class `capital_type` set is confirmed by a **direct organizer answer (DingTalk)**, which
+overrides the baseline guide (it said 2 classes and the wrong string `量化机构`). `散户` is a real
+modelled residual class — split from `量化` by execution **rhythm**, not order size. The old
+`量化机构` is now invalid (rejected by the output validator). See brief Rev. 7.
+
+The official `predict_result.csv` sample uses **random labels** (≈1:1:1 散户/游资/量化) — read zero
+signal from its values and balance, only its format.
 
 ## Repository layout
 
@@ -32,7 +38,9 @@ The official `predict_result.csv` sample uses **random labels** — read zero si
 ├── docs/
 │   ├── AFAC2026_Track1_Project_Brief.docx   # single source of truth — read first
 │   ├── competition-spec/                    # official Tianchi spec (intro + track 1 + §7.2 Case 1)
-│   └── official_guidance/                   # baseline guide, FAQ/clarifications, tutorials
+│   ├── official_guidance/                   # baseline guide, FAQ/clarifications, tutorials
+│   └── reference/
+│       └── official_baseline_main.py        # frozen organizer baseline (2-class, stale) — diff/benchmark only
 ├── samples/              # small OFFICIAL sample files (force-added past .gitignore)
 ├── data/                 # sourced raw L2 — GITIGNORED, never committed
 ├── src/                  # pipeline modules (see brief §9)
@@ -41,6 +49,13 @@ The official `predict_result.csv` sample uses **random labels** — read zero si
 ├── init_env.sh           # dependency install
 └── README.md
 ```
+
+`docs/reference/official_baseline_main.py` is the organizers' original monolithic
+baseline, frozen verbatim — it is **not** wired into our pipeline. Reach for it only
+as a reference: regression-diffing our outputs against the baseline on A/B榜 batches,
+or checking feature parity against its ~56-dim extractor. Its Task 2 is the stale
+2-class `{游资, 量化机构}` scheme (see Hard-locked facts) — read it for the algorithm,
+never for the label vocabulary.
 
 ## Compliance (auto-DQ if violated)
 
@@ -65,5 +80,5 @@ Window **18:00 → 08:00** to upload yesterday's predictions for an instant veri
 
 ```bash
 bash init_env.sh
-python main.py --input samples/AFAC2026.xlsx   # smoke-test on the official fixture
+python main.py --input samples/AFAC2026.xlsx -o outputs/   # smoke-test on the official fixture
 ```
