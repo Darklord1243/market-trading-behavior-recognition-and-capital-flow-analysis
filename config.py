@@ -9,18 +9,22 @@ strings are the *exact* submission values required by the official spec
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
-# Locked label vocabularies (exact submission strings — byte-verified)
+# Locked label vocabularies (exact submission strings)
 # ---------------------------------------------------------------------------
-# Task 2 capital_type: exactly two classes. NOTE the official required string is
-# "量化机构", NOT the bare "量化" that leaks into the random sample CSV.
-CAPITAL_TYPES = ["游资", "量化机构"]  # 2 classes, exact strings
+# Task 2 capital_type: exactly THREE classes. Confirmed by a direct organizer
+# answer in DingTalk, which OVERRIDES the baseline guide (the guide was wrong on
+# both the count — it said 2 — and the string — it said "量化机构"). The correct
+# quant string is the bare "量化", NOT "量化机构"; 散户 (retail) is a real,
+# modelled class — not a placeholder. Ordering: 量化 takes the slot the old
+# "量化机构" held; 散户 is appended (rules.py maps scores by these indices).
+CAPITAL_TYPES = ["游资", "量化", "散户"]  # 3 classes, exact strings
 
 # Task 2 capital_intention: exactly three classes. The third slot is "T0交易".
 INTENTION_CLASSES = ["买入", "卖出", "T0交易"]  # 3 classes
 
-# `散户` (retail) is a placeholder that physically appears in the random sample
-# labels but must NOT be modelled or emitted. Kept here only to assert-against.
-FORBIDDEN_CAPITAL_TYPES = ["散户", "量化"]  # 量化 = truncated form, also forbidden
+# "量化机构" is the OLD (wrong) 2-class quant string. It must never be emitted now
+# that the organizer confirmed the bare "量化". Kept here only to assert-against.
+FORBIDDEN_CAPITAL_TYPES = ["量化机构"]  # old 2-class string — now invalid
 
 # ---------------------------------------------------------------------------
 # OSS — Order Size Segmentation thresholds (SHARES, not amount)

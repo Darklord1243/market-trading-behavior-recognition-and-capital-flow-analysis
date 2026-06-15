@@ -1,13 +1,23 @@
-"""Stage-1 soft-rule scorer: 游资 vs 量化机构 + intent gate.
+"""Stage-1 soft-rule scorer: 游资 vs 量化 vs 散户 + intent gate.
 
-Ports the baseline 11-dimension weighted scoring (baseline-guide.md L388-396) and
-the `get_intention()` gate (L400-414) verbatim in behaviour. No labels are used —
-this is rule-based discrimination grounded in A-share financial priors:
-  * 游资 (hot money): large/aggressive/imbalanced, time-concentrated.
-  * 量化机构 (quant): small/frequent/balanced.
+Three-class rule-based discrimination grounded in A-share financial priors:
+  * 游资 (hot money): large/aggressive/imbalanced orders, open/close
+    time-concentrated, irregular *manual* rhythm.
+  * 量化 (quant): small/frequent/balanced orders, machine cadence — LOW
+    inter-event interval CV, HIGH burst ratio, high fast-cancel when a cancel
+    table is present. Regular, dense, symmetric.
+  * 散户 (retail): a guarded RESIDUAL — small orders but LOW order frequency,
+    HIGH/irregular interval CV (no cadence), LOW unilateral aggression, diffuse
+    timing (no open/close concentration), near-zero burst structure.
+
+IMPORTANT — the 量化/散户 split is RHYTHM-based, not SIZE-based. Both are
+small-order classes; what separates them is execution regularity/persistence
+(量化 = machine cadence, 散户 = no cadence). Do not "fix" this back to order size.
 
 These rules never reference a specific stock/date (compliance hard-rule #2) and use
-intraday-only features.
+intraday-only features. Per-feature normalisation is the existing z-score / rank
+form; class weights are 1.0 stubs (equal) — only the dimension *routing* into the
+three scores is real here, weight-tuning remains future work.
 """
 
 from __future__ import annotations
@@ -22,64 +32,101 @@ from config import (
     INTENTION_CLASSES,
 )
 
-# 11 normalised dimensions feeding the capital-type score. Each entry maps a feature
-# key to whether a HIGH value leans 游资 (hot money). Quant score is the complement.
-# Hot-money-leaning indices {large size, active buy, impact, time concentration} are
-# the baseline's documented 游资 signals (baseline-guide.md L392).
-# Each dim: (feature_key, hot_high, is_cb). `is_cb` marks dims derived from the
-# Cancel-Behaviour family, which are only valid when a tick-cancel table is present.
-SCORING_DIMS = [
-    ("oss_mega_amount_pct", True, False),    # 0 large size -> 游资
-    ("oss_small_amount_pct", False, False),  # 1 small size -> 量化
-    ("rs_burst_ratio", False, False),        # 2 rapid even cadence -> 量化
-    ("ap_active_buy_pct", True, False),      # 3 active buy -> 游资
-    ("rs_interval_cv", True, False),         # 4 bursty/irregular -> 游资
-    ("pd_max_price_impact_pct", True, False),# 5 price impact -> 游资
-    ("pi_time_concentration", True, False),  # 6 time concentration -> 游资
-    ("ap_unilateral_intensity", True, False),# 7 one-sided pressure -> 游资
-    ("obp_big_quote_share", True, False),    # 8 big resting quotes -> 游资
-    ("cb_sell_cancel_ratio", True, True),    # 9 sell-side cancels (spoofing) -> 游资
-    ("oss_mega_count_pct", True, False),     # 10 large-order frequency -> 游资
+# Per-class scoring dimensions. Each entry: (feature_key, high_supports, is_cb).
+#   high_supports=True  -> a HIGH normalised value supports the class (add v)
+#   high_supports=False -> a LOW  normalised value supports the class (add 1 - v)
+#   is_cb=True          -> Cancel-Behaviour dim, valid ONLY when a tick-cancel
+#                          table is present (cb_available); otherwise absent.
+# An absent dim votes NEUTRALLY (+0.5) so it never tilts a class score.
+
+# 游资: mega/large dominance, active-buy aggression, price impact, big resting
+# quotes, open/close concentration, sell-side spoofing cancels, and irregular
+# *manual* rhythm (high interval CV).
+DIMS_YOUZI = [
+    ("oss_mega_amount_pct", True, False),     # mega-order size dominance
+    ("oss_mega_count_pct", True, False),      # mega-order frequency
+    ("ap_active_buy_pct", True, False),       # active-buy aggression
+    ("ap_unilateral_intensity", True, False), # one-sided book pressure
+    ("pd_max_price_impact_pct", True, False), # price impact
+    ("pi_time_concentration", True, False),   # open/close time concentration
+    ("obp_big_quote_share", True, False),     # big resting quotes
+    ("rs_interval_cv", True, False),          # irregular manual rhythm
+    ("cb_sell_cancel_ratio", True, True),     # sell-side cancels (spoofing) [CB]
 ]
 
-NEUTRAL = 0.5  # an absent feature casts no vote: +0.5 to BOTH scores
+# 量化: small frequent orders, machine cadence (LOW interval CV, HIGH burst),
+# two-sided balance (LOW unilateral intensity), high fast-cancel [CB].
+DIMS_QUANT = [
+    ("oss_small_amount_pct", True, False),    # small-order dominance
+    ("rs_burst_ratio", True, False),          # dense burst cadence
+    ("rs_interval_cv", False, False),         # LOW CV -> regular machine cadence
+    ("ap_unilateral_intensity", False, False),# LOW -> two-sided / balanced
+    ("cb_fast_cancel_ratio", True, True),     # fast cancels (HFT) [CB]
+]
+
+# 散户: retail residual — small orders, NO cadence (HIGH interval CV, LOW burst),
+# LOW aggression, diffuse timing (LOW concentration). Inverse-of-aggression AND
+# inverse-of-machine-rhythm: weak on every "someone is driving this name" axis.
+DIMS_RETAIL = [
+    ("oss_small_amount_pct", True, False),    # small-order dominance
+    ("rs_interval_cv", True, False),          # HIGH/irregular CV -> no cadence
+    ("rs_burst_ratio", False, False),         # LOW -> near-zero burst structure
+    ("ap_unilateral_intensity", False, False),# LOW -> low aggression
+    ("pi_time_concentration", False, False),  # LOW -> diffuse timing
+]
+
+NEUTRAL = 0.5  # an absent feature casts no vote: +0.5 to that class score
+# 散户 is a GUARDED residual: it may only win the arg-max when BOTH 游资 and 量化
+# are weak (neither score clears NEUTRAL by more than this margin on the same
+# normalised scale). This stops a genuinely balanced, high-rhythm quant day (low
+# directional imbalance) from falling into retail by default — the single most
+# likely failure mode of a naive 3-way. Global constant, not a per-stock value.
+RETAIL_GATE_MARGIN = 0.05
 
 
 def _clip01(x: float) -> float:
     return 0.0 if x < 0 else (1.0 if x > 1 else x)
 
 
-def score_capital_type(feat: dict) -> tuple[str, float, float]:
-    """Return (capital_type, score_youzi, score_quant).
+def _class_score(feat: dict, dims: list, cb_available: bool) -> float:
+    """Mean normalised vote across a class's dimensions, in [0, 1].
 
-    Scores are normalised dimension sums; the label is the arg-max, matching the
-    baseline's ``return '游资' if score_yz >= score_qt else '量化机构'``.
-
-    Absent features must vote NEUTRALLY, not as 0. A CB dim is "absent" when no
-    cancel table is present (`cb_available == 0.0`); any dim is absent when its key
-    is missing/NaN. An absent dim contributes 0.5 to BOTH scores so it never tilts
-    the result (e.g. the all-zero `cb_sell_cancel_ratio` on snapshot-only data must
-    not inject a constant +1.0 into the 游资 score).
+    Absent dims (missing/NaN key, or a CB dim with no cancel table) vote NEUTRAL
+    so the score stays comparable across classes regardless of dim count.
     """
-    cb_available = float(feat.get("cb_available", 0.0)) > 0.0
-    score_yz = 0.0
-    score_qt = 0.0
-    for key, hot_high, is_cb in SCORING_DIMS:
+    total = 0.0
+    for key, high_supports, is_cb in dims:
         raw = feat.get(key, None)
         absent = (raw is None) or (raw != raw) or (is_cb and not cb_available)
         if absent:
-            score_yz += NEUTRAL
-            score_qt += NEUTRAL
+            total += NEUTRAL
             continue
         v = _clip01(float(raw))
-        if hot_high:
-            score_yz += v
-            score_qt += (1.0 - v)
-        else:
-            score_yz += (1.0 - v)
-            score_qt += v
-    capital_type = CAPITAL_TYPES[0] if score_yz >= score_qt else CAPITAL_TYPES[1]
-    return capital_type, score_yz, score_qt
+        total += v if high_supports else (1.0 - v)
+    return total / len(dims)
+
+
+def score_capital_type(feat: dict) -> tuple[str, list]:
+    """Return (capital_type, [score_youzi, score_quant, score_retail]).
+
+    Three continuous class scores (each in [0, 1]) and their guarded arg-max.
+    散户 is suppressed unless BOTH 游资 and 量化 are weak (§ retail guard); if
+    either shows real signal, the arg-max is between those two only. No hard
+    thresholds beyond the residual gate — labels are produced in Stage-2.
+    """
+    cb_available = float(feat.get("cb_available", 0.0)) > 0.0
+    score_yz = _class_score(feat, DIMS_YOUZI, cb_available)
+    score_qt = _class_score(feat, DIMS_QUANT, cb_available)
+    score_rt = _class_score(feat, DIMS_RETAIL, cb_available)
+    scores = [score_yz, score_qt, score_rt]
+
+    # Retail guard: 散户 eligible only when neither 游资 nor 量化 has real signal.
+    gate = NEUTRAL + RETAIL_GATE_MARGIN
+    retail_eligible = (score_yz <= gate) and (score_qt <= gate)
+    eligible = [0, 1, 2] if retail_eligible else [0, 1]
+
+    best = max(eligible, key=lambda i: scores[i])
+    return CAPITAL_TYPES[best], scores
 
 
 def get_intention(feat: dict) -> str:

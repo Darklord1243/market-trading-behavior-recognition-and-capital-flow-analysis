@@ -16,21 +16,27 @@ import logging
 
 import pandas as pd
 
-from config import RANDOM_SEED
+from config import CAPITAL_TYPES, RANDOM_SEED
 
 log = logging.getLogger(__name__)
 
 
 class CapitalTypeHead:
-    """Pass-through stub for the Stage-3 capital-type model.
+    """Pass-through stub for the Stage-3 capital-type model (3-class).
 
     Replace the body of `fit`/`predict` with a real LightGBM/XGBoost head trained on
     weak labels weighted by `capital_confidence`. Until then, predictions == weak
     labels, so output format and the audit contract are exercised end-to-end.
+
+    `n_classes` is 3 (游资 / 量化 / 散户) so that when the real head lands it trains a
+    3-class classifier over the locked `CAPITAL_TYPES` label space.
     """
+
+    n_classes = len(CAPITAL_TYPES)  # 3 — capital_type is a 3-class problem
 
     def __init__(self, random_state: int = RANDOM_SEED):
         self.random_state = random_state
+        self.classes_ = list(CAPITAL_TYPES)
         self._fitted = False
 
     def fit(self, features: pd.DataFrame, weak_labels: pd.DataFrame) -> "CapitalTypeHead":

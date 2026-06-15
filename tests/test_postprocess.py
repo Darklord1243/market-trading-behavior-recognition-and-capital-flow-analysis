@@ -40,18 +40,26 @@ def test_extra_column_rejected():
         validate_predict(df)
 
 
-def test_bad_capital_type_rejected():
+def test_old_long_form_quant_rejected():
+    # INVERTED guard: 量化机构 is the old 2-class string and is now forbidden.
     df = _good_predict()
-    df.loc[0, "capital_type"] = "量化"  # truncated -> forbidden
+    df.loc[0, "capital_type"] = "量化机构"
     with pytest.raises(OutputContractError):
         validate_predict(df)
 
 
-def test_retail_leak_rejected():
+def test_bare_quant_accepted():
+    # INVERTED guard: bare 量化 is now the correct, accepted quant string.
+    df = _good_predict()
+    df.loc[0, "capital_type"] = "量化"
+    validate_predict(df, expected_date="20260507")
+
+
+def test_retail_accepted():
+    # 散户 is now a valid, modelled class — must pass validation.
     df = _good_predict()
     df.loc[0, "capital_type"] = "散户"
-    with pytest.raises(OutputContractError):
-        validate_predict(df)
+    validate_predict(df, expected_date="20260507")
 
 
 def test_bad_intention_rejected():

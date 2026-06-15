@@ -62,7 +62,10 @@ def validate_predict(df: pd.DataFrame, expected_date: str | None = None):
         raise OutputContractError(f"capital_type not in {CAPITAL_TYPES}: {bad_type}")
     leaked = set(df["capital_type"]) & set(FORBIDDEN_CAPITAL_TYPES)
     if leaked:
-        raise OutputContractError(f"forbidden capital_type leaked: {leaked}")
+        raise OutputContractError(
+            "量化机构 is the OLD 2-class string; correct value is bare 量化 "
+            f"(organizer-confirmed 3-class). Forbidden value(s) present: {leaked}"
+        )
     bad_intent = set(df["capital_intention"]) - set(INTENTION_CLASSES)
     if bad_intent:
         raise OutputContractError(
