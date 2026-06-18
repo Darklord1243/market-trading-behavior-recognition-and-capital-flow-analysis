@@ -1,5 +1,10 @@
 # Build Notes — Pipeline Scaffold (Step B)
 
+> ⚠️ **SUPERSEDED for current state — see `docs/LIS.md`.** This file documents the Step-B scaffold era
+> (2-class `量化机构`, 24 tests, fixture emitting `量化机构`). The repo is now **3-class `{游资,量化,散户}`**
+> (commit `ee2a1d9`), **37 tests**, and the fixture emits `散户`. Treat `docs/LIS.md` + the code as the
+> source of truth; this file is kept for build history only.
+
 **Branch:** `feat/pipeline-scaffold`
 **Date:** 2026-06-13
 **Goal of this step:** a running, audit-compliant skeleton that ingests the official
