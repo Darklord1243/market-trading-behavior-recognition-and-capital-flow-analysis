@@ -16,7 +16,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from config import OSS_THRESHOLDS
+from config import CB_FAST_CANCEL_MS, OSS_THRESHOLDS
 from src.ingest import parse_book_json
 
 log = logging.getLogger(__name__)
@@ -154,25 +154,100 @@ def _pd_features(group: pd.DataFrame) -> dict:
     return {"pd_max_price_impact_pct": max_impact}
 
 
-def _cb_features(group: pd.DataFrame, has_cancel_table: bool) -> dict:
-    """Cancel-Behaviour. Snapshot-only -> zero-valued, flagged (graceful degrade)."""
+def _cb_features(
+    group: pd.DataFrame,
+    has_cancel_table: bool,
+    cancel_df: "pd.DataFrame | None" = None,
+) -> dict:
+    """Cancel-Behaviour features.
+
+    Snapshot-only path (has_cancel_table=False):
+        All CB values → 0.0, cb_available → 0.0.  CB dims vote NEUTRAL in rules.
+
+    Local-CSV path (has_cancel_table=True, cancel_df provided):
+        Computes 5 CB ratios from the cancel event frame produced by
+        ``ingest_local.read_cancel_frame``.  All outputs are finite floats in [0,1].
+
+    Fast-cancel proxy note
+    ----------------------
+    ``cb_fast_cancel_ratio`` is computed as the share of **consecutive cancel pairs**
+    whose inter-cancel interval (``cancel_time`` integer difference, in HHMMSSmmm
+    units which proxy milliseconds at this resolution) is < CB_FAST_CANCEL_MS.
+    This is an **inter-cancel interval proxy**, NOT true order→cancel latency.
+    True order→cancel latency requires matching each cancel to its originating
+    order via ref columns (叫买序号/叫卖序号/交易所委托号) that
+    ``read_cancel_frame`` does not currently expose.  A future stretch goal (Track
+    L-b extension) can add ref-column support to ``read_cancel_frame`` and compute
+    the true latency from matched pairs.
+    """
     if not has_cancel_table:
         out = {k: 0.0 for k in CB_KEYS}
         out["cb_available"] = 0.0
         return out
-    # Seam for the real tick-cancel computation once a cancel table is wired in.
-    # TODO(cancel-table): compute fast-cancel ratio, buy/sell cancel divergence,
-    # cancel-interval CV from the tick-cancellation stream.
+
     out = {k: 0.0 for k in CB_KEYS}
     out["cb_available"] = 1.0
+
+    # No cancel data available → return zero values with flag=1.0
+    if cancel_df is None or len(cancel_df) == 0:
+        return out
+
+    n_cancel = len(cancel_df)
+
+    # --- cb_cancel_order_ratio ---
+    # cancel count / (cancel count + trade count)
+    n_trades = len(group)
+    out["cb_cancel_order_ratio"] = _safe_div(n_cancel, n_cancel + n_trades)
+
+    # --- cb_cancel_volume_ratio ---
+    # sum(cancel_qty) / (sum(cancel_qty) + sum(trade tick_volume))
+    cancel_qty_col = "cancel_qty" if "cancel_qty" in cancel_df.columns else None
+    cancel_vol = float(cancel_df[cancel_qty_col].sum()) if cancel_qty_col else 0.0
+    trade_vol = float(group["tick_volume"].sum()) if "tick_volume" in group.columns else 0.0
+    out["cb_cancel_volume_ratio"] = _safe_div(cancel_vol, cancel_vol + trade_vol)
+
+    # --- cb_buy_cancel_ratio / cb_sell_cancel_ratio ---
+    if "side" in cancel_df.columns:
+        side = cancel_df["side"].astype(str).str.strip().str.upper()
+        # Accept 'B'/'BUY' for buy, 'S'/'SELL' for sell
+        buy_mask = side.str.startswith("B")
+        sell_mask = side.str.startswith("S")
+        out["cb_buy_cancel_ratio"] = _safe_div(int(buy_mask.sum()), n_cancel)
+        out["cb_sell_cancel_ratio"] = _safe_div(int(sell_mask.sum()), n_cancel)
+
+    # --- cb_fast_cancel_ratio ---
+    # Inter-cancel interval proxy: share of consecutive cancel pairs with
+    # cancel_time difference < CB_FAST_CANCEL_MS.
+    # cancel_time is a HHMMSSmmm integer; consecutive differences proxy ms intervals
+    # at the sub-second resolution used in A-share tick data.
+    time_col = "cancel_time" if "cancel_time" in cancel_df.columns else (
+        "time_int" if "time_int" in cancel_df.columns else None
+    )
+    if time_col is not None and n_cancel >= 2:
+        times = pd.to_numeric(cancel_df[time_col], errors="coerce").dropna().sort_values()
+        intervals = times.diff().dropna()
+        intervals = intervals[intervals >= 0]
+        if len(intervals) > 0:
+            fast = int((intervals < CB_FAST_CANCEL_MS).sum())
+            out["cb_fast_cancel_ratio"] = _safe_div(fast, len(intervals))
+
     return out
 
 
-def compute_daily_features(group: pd.DataFrame, has_cancel_table: bool = False) -> dict:
+def compute_daily_features(
+    group: pd.DataFrame,
+    has_cancel_table: bool = False,
+    cancel_df: "pd.DataFrame | None" = None,
+) -> dict:
     """Compute the full per-(stock, day) feature vector for one tick group.
 
     `group` is the rows of a single (stock_code, transaction_date), already cleaned,
     sorted, and carrying tick_* increment columns (see ingest._normalise_and_clean).
+
+    `cancel_df` is the per-(stock, day) cancel event frame produced by
+    ``ingest_local.read_cancel_frame``.  When provided and ``has_cancel_table=True``,
+    real CB feature values are computed.  When ``None`` (the default), CB values are
+    0.0 (backward-compatible: snapshot/xlsx path is unaffected).
     """
     feat: dict[str, float] = {}
     tick_vol = group["tick_volume"]
@@ -184,7 +259,7 @@ def compute_daily_features(group: pd.DataFrame, has_cancel_table: bool = False) 
     feat.update(_rs_features(group))
     feat.update(_obp_features(group))
     feat.update(_pd_features(group))
-    feat.update(_cb_features(group, has_cancel_table))
+    feat.update(_cb_features(group, has_cancel_table, cancel_df=cancel_df))
 
     # big-order share (directly available field, summed over ticks)
     if "tick_bigordervolume" in group.columns:

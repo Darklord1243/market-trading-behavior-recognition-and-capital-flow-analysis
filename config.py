@@ -62,6 +62,18 @@ CUMULATIVE_FIELDS = ["volume", "amount", "transactions", "bigordervolume"]
 BEIJING_SESSION_HOURS = (8, 16)
 
 # ---------------------------------------------------------------------------
+# CB (Cancel-Behaviour) thresholds
+# ---------------------------------------------------------------------------
+# Fast-cancel interval threshold (milliseconds).
+# NOTE: this is an **inter-cancel interval proxy** — the time between consecutive
+# cancel events in the cancel stream — NOT the true order→cancel latency (which
+# requires matching each cancel to its originating order via ref columns such as
+# 叫买序号/叫卖序号/交易所委托号 that read_cancel_frame does not currently expose).
+# True order→cancel latency is deferred until read_cancel_frame is extended to
+# carry order-ref columns (Track L-b stretch goal).
+CB_FAST_CANCEL_MS: int = 500  # cancel pairs with inter-cancel interval < 500ms
+
+# ---------------------------------------------------------------------------
 # Intent gate thresholds (baseline get_intention(), verbatim)
 # ---------------------------------------------------------------------------
 INTENT_BUY_PCT = 0.6

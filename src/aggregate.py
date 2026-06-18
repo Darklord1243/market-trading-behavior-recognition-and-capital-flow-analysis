@@ -8,11 +8,20 @@ The `hh` Beijing-hour window is the seam for finer intraday aggregation: PI feat
 already consume `hour`/`minute` inside the daily reduction, so window->daily rollup
 is handled there. Should later work need explicit per-hour vectors before the daily
 reduce, `compute_window_features` is the place to add it without touching callers.
+
+Cancel data plumbing (Track L-b)
+---------------------------------
+``build_feature_matrix`` accepts an optional ``cancel_lookup`` mapping
+``(stock_code, date) -> cancel_df`` produced by ``ingest_local.read_cancel_frame``.
+When present, the per-(stock, day) cancel frame is passed into
+``compute_daily_features`` so real CB feature values are computed.
+The xlsx / snapshot path passes no ``cancel_lookup`` → backward-compatible.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 import pandas as pd
 
@@ -21,12 +30,38 @@ from src.features import compute_daily_features
 log = logging.getLogger(__name__)
 
 
-def build_feature_matrix(df: pd.DataFrame, has_cancel_table: bool = False) -> pd.DataFrame:
-    """Reduce the cleaned tick frame to one row per (stock_code, transaction_date)."""
+def build_feature_matrix(
+    df: pd.DataFrame,
+    has_cancel_table: bool = False,
+    cancel_lookup: Optional[dict] = None,
+) -> pd.DataFrame:
+    """Reduce the cleaned tick frame to one row per (stock_code, transaction_date).
+
+    Parameters
+    ----------
+    df:
+        Cleaned, multi-stock tick frame (output of ``ingest.load_raw`` or
+        ``ingest_local.load_local``).
+    has_cancel_table:
+        ``True`` when the source data contains cancel events (local CSV path).
+        Controls whether CB features are flagged as available.
+    cancel_lookup:
+        Optional dict mapping ``(stock_code, date_str)`` →
+        ``pd.DataFrame`` of cancel events (columns: ``side``, ``cancel_time``,
+        ``cancel_qty``).  Produced by calling ``ingest_local.read_cancel_frame``
+        for each stock-day.  When ``None`` (default), CB values are 0.0.
+    """
     rows = []
     keys = []
     for (code, date), group in df.groupby(["stock_code", "transaction_date"], sort=True):
-        feat = compute_daily_features(group, has_cancel_table=has_cancel_table)
+        cancel_df = None
+        if cancel_lookup is not None:
+            cancel_df = cancel_lookup.get((code, str(date)))
+        feat = compute_daily_features(
+            group,
+            has_cancel_table=has_cancel_table,
+            cancel_df=cancel_df,
+        )
         rows.append(feat)
         keys.append((code, date))
 
