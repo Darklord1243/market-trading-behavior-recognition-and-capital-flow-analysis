@@ -296,3 +296,221 @@ def test_compute_daily_features_no_cancel_df_backward_compat():
     from src.features import CB_KEYS
     for k in CB_KEYS:
         assert result[k] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# RS (Rhythm/Sequence) feature tests — Phase 2
+# ---------------------------------------------------------------------------
+
+def _rs_group_uniform_30s(n=5, dtype="datetime64[ms]"):
+    """A group of n ticks spaced exactly 30 seconds apart.
+
+    dtype defaults to "datetime64[ms]" (pandas 3.0.x ingest output) so tests
+    are genuine dtype-portability regression guards.  Pass dtype="datetime64[ns]"
+    to exercise the pandas 2.2.x path.  _rs_features must yield the same result
+    regardless of which resolution is used.
+    """
+    base_ms = 1746584400000  # arbitrary epoch in ms (2026-05-07 01:00:00 UTC)
+    ts_ms = [base_ms + i * 30_000 for i in range(n)]
+    return pd.DataFrame({
+        "datetime_utc": pd.to_datetime(ts_ms, unit="ms").astype(dtype),
+        "tick_volume": [1000] * n,
+        "tick_amount": [10000.0] * n,
+        "price": [12.0] * n,
+        "price_change": [0.0] * n,
+        "hour": [9] * n,
+        "minute": [30] * n,
+        "tick_bigordervolume": [0] * n,
+        "totalbidvolume": [1000] * n,
+        "totalaskvolume": [1000] * n,
+        "bids": [json.dumps([{"price": 12.0, "volume": 1000.0}])] * n,
+        "asks": [json.dumps([{"price": 12.05, "volume": 1000.0}])] * n,
+    })
+
+
+def _rs_group_uniform_50ms(n=6, dtype="datetime64[ms]"):
+    """A group of n ticks spaced exactly 50 ms apart — all sub-100ms bursts.
+
+    dtype defaults to "datetime64[ms]" so the burst test is a genuine regression
+    guard: old astype("int64")//1_000_000 on [ms] collapses ALL intervals to 0ms
+    (which also triggers burst=1.0 — both old and new agree on [ms] burst=1.0 for
+    this group since all are < 100ms either way).  The discriminating case is the
+    uniform_30s group where old [ms] gives burst=1.0 but new gives burst=0.0.
+    """
+    base_ms = 1746584400000
+    ts_ms = [base_ms + i * 50 for i in range(n)]
+    return pd.DataFrame({
+        "datetime_utc": pd.to_datetime(ts_ms, unit="ms").astype(dtype),
+        "tick_volume": [100] * n,
+        "tick_amount": [1000.0] * n,
+        "price": [12.0] * n,
+        "price_change": [0.0] * n,
+        "hour": [9] * n,
+        "minute": [30] * n,
+        "tick_bigordervolume": [0] * n,
+        "totalbidvolume": [1000] * n,
+        "totalaskvolume": [1000] * n,
+        "bids": [json.dumps([{"price": 12.0, "volume": 1000.0}])] * n,
+        "asks": [json.dumps([{"price": 12.05, "volume": 1000.0}])] * n,
+    })
+
+
+@pytest.mark.parametrize("dtype", ["datetime64[ms]", "datetime64[ns]"])
+def test_rs_intervals_dtype_portable(dtype):
+    """Phase 2.1 — dtype-portable interval computation.
+
+    _rs_features must yield the SAME result whether datetime_utc is
+    datetime64[ms] (pandas 3.0.x) or datetime64[ns] (pandas 2.2.x).
+
+    This test FAILS on the old astype("int64")//1_000_000 code when
+    datetime_utc is datetime64[ms], because that path over-divides
+    milliseconds by 1_000_000 (assuming nanoseconds) → intervals collapse
+    to 0 → burst_ratio=1.0 instead of 0.0.
+
+    Two discriminating assertions:
+      (a) uniform 30s group → rs_burst_ratio == 0.0 (proves intervals are
+          ~30000ms, not 0ms; old [ms] code yields burst=1.0 → FAILS).
+      (b) uniform 30s group → rs_interval_cv == 0.0 (consistent cadence;
+          old [ms] code also yields cv=0.0 here because std(zeros)/mean(zeros)
+          is guarded to 0.0 — so this alone is not discriminating, but
+          combined with (a) it fully pins the uniform-30s contract).
+
+    The parametrization itself is the regression guard: old code gives
+    different results on [ms] vs [ns], so the parametrize assertion
+    "same result on both dtypes" fails under the old formula.
+    """
+    from src.features import _rs_features
+    g = _rs_group_uniform_30s(n=5, dtype=dtype)
+    f = _rs_features(g)
+
+    # (a) burst must be 0.0: intervals are 30000ms, none < 100ms threshold.
+    #     OLD code on [ms]: intervals collapse to 0ms → all < 100ms → burst=1.0 → FAILS.
+    #     OLD code on [ns]: intervals are correct 30000ms → burst=0.0 → PASSES.
+    #     Parametrizing over both dtypes means old code fails the [ms] case.
+    assert f["rs_burst_ratio"] == pytest.approx(0.0, abs=1e-6), (
+        f"dtype={dtype}: rs_burst_ratio={f['rs_burst_ratio']} — expected 0.0 for "
+        "uniform 30s cadence; old astype('int64')//1_000_000 on datetime64[ms] "
+        "collapses intervals to 0ms so burst=1.0"
+    )
+
+    # (b) cv must be 0.0: all intervals equal → std=0 → cv=0.
+    assert f["rs_interval_cv"] == pytest.approx(0.0, abs=1e-6), (
+        f"dtype={dtype}: rs_interval_cv={f['rs_interval_cv']} — expected 0.0 for "
+        "uniform 30s cadence"
+    )
+
+
+@pytest.mark.parametrize("dtype", ["datetime64[ms]", "datetime64[ns]"])
+def test_rs_uniform_cadence_low_cv(dtype):
+    """Phase 2.4 — uniform cadence → cv ≈ 0; irregular cadence → higher cv.
+
+    Parametrized over both datetime64 resolutions: _rs_features must give the
+    same correct result on [ms] (pandas 3.0.x) and [ns] (pandas 2.2.x).
+
+    Hand-computed:
+      uniform 30s × 5 ticks → 4 intervals of 30000 ms → std=0, cv=0.
+      irregular: [1000, 5000, 30000, 100] ms → mean=9025, std≈11987, cv≈1.357
+
+    The [ms] irregular case is the key regression guard: old astype("int64")
+    //1_000_000 on [ms] collapses all intervals to 0 → cv=0.0 (wrong) instead
+    of ≈1.357.  The test FAILS under the old formula on the [ms] parametrize arm.
+    """
+    from src.features import _rs_features
+
+    # Uniform: cv == 0.0
+    g_uniform = _rs_group_uniform_30s(n=5, dtype=dtype)
+    f_uniform = _rs_features(g_uniform)
+    assert f_uniform["rs_interval_cv"] == pytest.approx(0.0, abs=1e-6)
+
+    # Irregular: plant ticks at +0, +1000, +6000, +36000, +36100 ms
+    base_ms = 1746584400000
+    offsets = [0, 1000, 6000, 36000, 36100]
+    ts_ms_list = [base_ms + o for o in offsets]
+    n = len(offsets)
+    g_irreg = pd.DataFrame({
+        "datetime_utc": pd.to_datetime(ts_ms_list, unit="ms").astype(dtype),
+        "tick_volume": [100] * n,
+        "tick_amount": [1000.0] * n,
+        "price": [12.0] * n,
+        "price_change": [0.0] * n,
+        "hour": [9] * n,
+        "minute": [30] * n,
+        "tick_bigordervolume": [0] * n,
+        "totalbidvolume": [1000] * n,
+        "totalaskvolume": [1000] * n,
+        "bids": [json.dumps([{"price": 12.0, "volume": 1000.0}])] * n,
+        "asks": [json.dumps([{"price": 12.05, "volume": 1000.0}])] * n,
+    })
+    # intervals: 1000, 5000, 30000, 100 ms
+    # mean = 9025, std = sqrt(((1000-9025)^2+(5000-9025)^2+(30000-9025)^2+(100-9025)^2)/4)
+    intervals = [1000.0, 5000.0, 30000.0, 100.0]
+    mean_i = sum(intervals) / 4  # 9025
+    var_i = sum((x - mean_i) ** 2 for x in intervals) / 4
+    std_i = var_i ** 0.5
+    expected_cv = std_i / mean_i  # ≈ 1.357
+
+    f_irreg = _rs_features(g_irreg)
+    assert f_irreg["rs_interval_cv"] == pytest.approx(expected_cv, rel=1e-4), (
+        f"dtype={dtype}: Expected cv≈{expected_cv:.4f}, got {f_irreg['rs_interval_cv']:.4f}; "
+        "old astype('int64')//1_000_000 on datetime64[ms] yields cv=0.0 (FAILS)"
+    )
+    # irregular must be much higher than uniform — genuine discrimination
+    assert f_irreg["rs_interval_cv"] > 0.5
+
+
+@pytest.mark.parametrize("dtype", ["datetime64[ms]", "datetime64[ns]"])
+def test_rs_burst_sub_100ms(dtype):
+    """Phase 2.4 — burst ratio = share of intervals < 100ms.
+
+    Parametrized over both datetime64 resolutions: _rs_features must give the
+    same correct burst on [ms] and [ns].
+
+    50ms uniform group (n=6 → 5 intervals all = 50ms < 100ms) → burst≈1.0.
+    30s uniform group → burst = 0.0.
+
+    The 30s [ms] case is the key regression guard: old astype("int64")//1_000_000
+    on [ms] collapses 30000ms gaps to 0ms → all < 100ms → burst=1.0 (WRONG).
+    The new .diff().dt.total_seconds()*1000 correctly yields 30000ms → burst=0.0.
+    The test FAILS under the old formula for the [ms] 30s group.
+    """
+    from src.features import _rs_features
+
+    # All intervals 50ms → all < 100ms → burst = 1.0 (same for both [ms] and [ns])
+    g_burst = _rs_group_uniform_50ms(n=6, dtype=dtype)
+    f_burst = _rs_features(g_burst)
+    assert f_burst["rs_burst_ratio"] == pytest.approx(1.0, abs=1e-6), (
+        f"dtype={dtype}: rs_burst_ratio={f_burst['rs_burst_ratio']} — expected 1.0 for 50ms cadence"
+    )
+
+    # All intervals 30000ms → none < 100ms → burst = 0.0
+    # OLD code on [ms]: collapses to 0ms → burst=1.0 → FAILS this assertion
+    # NEW code on [ms]: 30000ms intervals → burst=0.0 → PASSES
+    g_slow = _rs_group_uniform_30s(n=5, dtype=dtype)
+    f_slow = _rs_features(g_slow)
+    assert f_slow["rs_burst_ratio"] == pytest.approx(0.0, abs=1e-6), (
+        f"dtype={dtype}: rs_burst_ratio={f_slow['rs_burst_ratio']} — expected 0.0 for 30s cadence; "
+        "old astype('int64')//1_000_000 on datetime64[ms] yields burst=1.0 (FAILS)"
+    )
+
+
+@pytest.mark.parametrize("dtype", ["datetime64[ms]", "datetime64[ns]"])
+def test_rs_split_similarity_present(dtype):
+    """Phase 2 task 4 — rs_split_similarity must be present and in [0, 1].
+
+    Parametrized over both datetime64 resolutions.  For a uniform 30s group,
+    cv=0.0 → split_similarity = max(0, 1-0) = 1.0 on both dtypes.
+    """
+    from src.features import _rs_features
+    import math
+
+    # uniform [dtype] → cv=0 → rs_split_similarity = max(0, 1-0) = 1.0
+    g = _rs_group_uniform_30s(n=5, dtype=dtype)
+    f = _rs_features(g)
+    assert "rs_split_similarity" in f, "rs_split_similarity must be in _rs_features output"
+    assert math.isfinite(f["rs_split_similarity"])
+    assert 0.0 <= f["rs_split_similarity"] <= 1.0
+    # uniform cadence → cv≈0 → similarity≈1
+    assert f["rs_split_similarity"] == pytest.approx(1.0, abs=1e-6), (
+        f"dtype={dtype}: rs_split_similarity={f['rs_split_similarity']} — expected 1.0 "
+        "for uniform 30s cadence (cv=0)"
+    )

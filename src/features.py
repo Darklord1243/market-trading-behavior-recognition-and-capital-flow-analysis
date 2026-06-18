@@ -16,7 +16,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from config import CB_FAST_CANCEL_MS, OSS_THRESHOLDS
+from config import CB_FAST_CANCEL_MS, OSS_THRESHOLDS, RS_BURST_THRESHOLD_MS
 from src.ingest import parse_book_json
 
 log = logging.getLogger(__name__)
@@ -101,18 +101,40 @@ def _pi_features(group: pd.DataFrame) -> dict:
 
 
 def _rs_features(group: pd.DataFrame) -> dict:
-    """Rhythm/Sequence: inter-tick interval coefficient of variation + burst ratio."""
-    # interval diffs are timezone-invariant; use the UTC stamp for clarity.
-    ts = group["datetime_utc"].astype("int64") // 1_000_000  # ms
-    intervals = ts.diff().dropna()
-    intervals = intervals[intervals >= 0]
-    if len(intervals) < 2:
-        return {"rs_interval_cv": 0.0, "rs_burst_ratio": 0.0}
-    mean = intervals.mean()
-    cv = _safe_div(float(intervals.std(ddof=0)), float(mean))
-    # burst ratio: share of intervals far below the mean (rapid-fire submissions)
-    burst = _safe_div(int((intervals < 0.25 * mean).sum()), len(intervals))
-    return {"rs_interval_cv": cv, "rs_burst_ratio": burst}
+    """Rhythm/Sequence: inter-tick interval CV, burst ratio, split similarity.
+
+    Resolution-robust: uses .diff().dt.total_seconds() * 1000 so the result
+    is the same regardless of whether datetime_utc is datetime64[ns] (pandas
+    2.2.x) or datetime64[ms] (pandas 3.0.x).  The old astype("int64")//1_000_000
+    path assumed nanosecond resolution and over-divided on ms-dtype timestamps
+    (every 30 s gap collapsed to 0 ms → cv=13.48, burst=0.99).
+
+    Burst definition: share of intervals strictly < RS_BURST_THRESHOLD_MS (100 ms
+    by default).  Absolute threshold avoids the saturation problem of the old
+    0.25*mean definition (which equals 1.0 whenever mean≈0).
+    """
+    # dtype-portable millisecond intervals
+    intervals_ms = (
+        group["datetime_utc"].diff().dropna().dt.total_seconds() * 1000.0
+    )
+    intervals_ms = intervals_ms[intervals_ms >= 0]
+    if len(intervals_ms) < 2:
+        return {
+            "rs_interval_cv": 0.0,
+            "rs_burst_ratio": 0.0,
+            "rs_split_similarity": 0.0,
+        }
+    mean_ms = float(intervals_ms.mean())
+    cv = _safe_div(float(intervals_ms.std(ddof=0)), mean_ms)
+    # burst: absolute threshold (baseline ref: < 100 ms)
+    burst = float((intervals_ms < RS_BURST_THRESHOLD_MS).sum()) / len(intervals_ms)
+    # split similarity: max(0, 1 - cv) — higher when cadence is uniform (iceberg split proxy)
+    split_sim = max(0.0, 1.0 - cv)
+    return {
+        "rs_interval_cv": cv,
+        "rs_burst_ratio": burst,
+        "rs_split_similarity": split_sim,
+    }
 
 
 def _obp_features(group: pd.DataFrame) -> dict:

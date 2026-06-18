@@ -74,6 +74,15 @@ BEIJING_SESSION_HOURS = (8, 16)
 CB_FAST_CANCEL_MS: int = 500  # cancel pairs with inter-cancel interval < 500ms
 
 # ---------------------------------------------------------------------------
+# RS (Rhythm/Sequence) thresholds
+# ---------------------------------------------------------------------------
+# Absolute burst threshold (milliseconds).  Intervals shorter than this count
+# as "burst" (rapid-fire) submissions.  Using an absolute threshold avoids the
+# scale-free saturation problem of the old 0.25×mean definition (which collapses
+# to 1.0 when mean≈0, i.e. the dtype-bug state).  Baseline reference: 100 ms.
+RS_BURST_THRESHOLD_MS: int = 100
+
+# ---------------------------------------------------------------------------
 # Intent gate thresholds (baseline get_intention(), verbatim)
 # ---------------------------------------------------------------------------
 INTENT_BUY_PCT = 0.6
