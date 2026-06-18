@@ -19,6 +19,7 @@ from config import (
     IMBALANCE_SNAPSHOT_WEIGHT,
     INTENT_IMBALANCE,
 )
+from src.normalize import normalize_matrix
 from src.rules import get_intention, score_capital_type
 
 log = logging.getLogger(__name__)
@@ -49,19 +50,26 @@ def _intent_confidence(feat: dict) -> float:
 def weak_label_matrix(matrix: pd.DataFrame) -> pd.DataFrame:
     """Produce weak labels + confidence for every (stock, day) feature row.
 
+    Capital-type scoring runs on rank-normalized values (cross-sample within-day,
+    via normalize_matrix) so features are comparable across stocks. Intent gate
+    thresholds are absolute, so get_intention and _intent_confidence use the
+    original raw matrix rows unchanged.
+
     Returns a frame indexed like `matrix` with columns:
     capital_type, capital_intention, capital_confidence, intent_confidence.
     """
+    norm = normalize_matrix(matrix)
     records = []
-    for idx, row in matrix.iterrows():
-        feat = row.to_dict()
-        capital_type, scores = score_capital_type(feat)
-        intention = get_intention(feat)
+    for idx, row in norm.iterrows():
+        feat_norm = row.to_dict()
+        feat_raw = matrix.loc[idx].to_dict()
+        capital_type, scores = score_capital_type(feat_norm)
+        intention = get_intention(feat_raw)
         records.append({
             "capital_type": capital_type,
             "capital_intention": intention,
             "capital_confidence": _capital_confidence(scores),
-            "intent_confidence": _intent_confidence(feat),
+            "intent_confidence": _intent_confidence(feat_raw),
         })
     out = pd.DataFrame(records, index=matrix.index)
     log.info("weak labels: %s", out["capital_type"].value_counts().to_dict())
