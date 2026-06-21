@@ -50,6 +50,9 @@ log = logging.getLogger(__name__)
 _TRUTH_REQUIRED = ["stock_code", "transaction_date", "capital_type", "confidence", "source"]
 # Default truth labels path
 _DEFAULT_LABELS = os.path.join(_ROOT, "tests", "fixtures", "validation_labels.csv")
+# Competition 100-stock universe for rank-normalization panel (Track V.5 / measurement fix A)
+_DEFAULT_NORM_UNIVERSE = os.path.join(_ROOT, "samples", "stock-samples.xlsx")
+_UNIVERSE_CODE_COLS = ("股票代码", "stock_code")
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +102,7 @@ def load_truth_labels(path: str, min_confidence: float = 0.0) -> pd.DataFrame:
 def predict_for_keys(
     filtered_truth: pd.DataFrame,
     input_source: str,
+    norm_universe_path: str | None = None,
 ) -> dict[str, Any]:
     """Run the pipeline on the labeled (stock, day) keys and return scored result.
 
@@ -109,12 +113,18 @@ def predict_for_keys(
     input_source:
         Either ``local:<root>`` (run the local ingest pipeline) or a path to a
         precomputed prediction CSV.
+    norm_universe_path:
+        Optional path to a CSV/xlsx listing stock codes for the normalization
+        panel when ``input_source`` is ``parquet:…``.  Defaults to
+        ``samples/stock-samples.xlsx`` when that file exists.
 
     Returns
     -------
     dict with keys: ``weighted_f1``, ``n``, ``per_class`` — from validate.weighted_f1.
     """
-    pred_df = _get_predictions(filtered_truth, input_source)
+    pred_df = _get_predictions(
+        filtered_truth, input_source, norm_universe_path=norm_universe_path
+    )
     if pred_df is None or pred_df.empty:
         return _empty_result()
     return weighted_f1(pred_df, filtered_truth)
@@ -147,9 +157,86 @@ def _empty_result() -> dict[str, Any]:
     return {"weighted_f1": 0.0, "n": 0, "per_class": per_class}
 
 
+def _load_universe_codes(path: str) -> list[str]:
+    """Load exchange-suffixed stock codes from a CSV or xlsx universe file."""
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"norm-universe file not found: {path}")
+
+    if path.lower().endswith((".xlsx", ".xls")):
+        df = pd.read_excel(path, dtype=str)
+    else:
+        df = pd.read_csv(path, encoding="utf-8", dtype=str)
+
+    col = next((c for c in _UNIVERSE_CODE_COLS if c in df.columns), None)
+    if col is None:
+        raise ValueError(
+            f"norm-universe file {path!r} must have one of {_UNIVERSE_CODE_COLS}; "
+            f"got {list(df.columns)}"
+        )
+    codes = df[col].astype(str).str.strip()
+    codes = codes[codes.ne("") & codes.ne("nan")]
+    return sorted(codes.unique().tolist())
+
+
+def _panel_keys(labeled_keys: list[str], norm_universe: list[str] | None = None) -> list[str]:
+    """Union of labeled scoring keys and extra normalization-panel stocks."""
+    panel = set(labeled_keys)
+    if norm_universe:
+        panel |= set(norm_universe)
+    return sorted(panel)
+
+
+def _build_parquet_matrix(
+    root: str,
+    date: str,
+    labeled_keys: list[str],
+    norm_universe: list[str] | None = None,
+) -> pd.DataFrame:
+    """Build a feature matrix over (labeled ∪ norm_universe) for realistic ranks."""
+    from src import aggregate
+    from src.ingest_parquet import load_parquet, read_cancel_frame_parquet
+
+    panel = _panel_keys(labeled_keys, norm_universe)
+    df = load_parquet(root, date, keys=panel)
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    cancel_lookup: dict = {}
+    for code in panel:
+        try:
+            cancel_lookup[(code, str(date))] = read_cancel_frame_parquet(root, date, code)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "_build_parquet_matrix: cancel read failed for %s/%s: %s",
+                date,
+                code,
+                exc,
+            )
+
+    return aggregate.build_feature_matrix(
+        df, has_cancel_table=True, cancel_lookup=cancel_lookup
+    )
+
+
+def _resolve_norm_universe_codes(
+    norm_universe: list[str] | None = None,
+    norm_universe_path: str | None = None,
+) -> list[str]:
+    """Extra stock codes for the normalization panel (not necessarily labeled)."""
+    if norm_universe:
+        return list(norm_universe)
+    path = norm_universe_path or (
+        _DEFAULT_NORM_UNIVERSE if os.path.isfile(_DEFAULT_NORM_UNIVERSE) else None
+    )
+    if path:
+        return _load_universe_codes(path)
+    return []
+
+
 def _get_predictions(
     filtered_truth: pd.DataFrame,
     input_source: str,
+    norm_universe_path: str | None = None,
 ) -> pd.DataFrame | None:
     """Dispatch to local ingest or precomputed CSV based on input_source.
 
@@ -171,7 +258,11 @@ def _get_predictions(
             root = src.split(":", 1)[1].strip() or "data/202606"
         else:
             root = "data/202606"
-        return _predict_parquet(filtered_truth, root)
+        return _predict_parquet(
+            filtered_truth,
+            root,
+            norm_universe_path=norm_universe_path,
+        )
     else:
         # Treat src as a path to a precomputed prediction CSV
         if not os.path.isfile(src):
@@ -248,47 +339,43 @@ def _predict_local(filtered_truth: pd.DataFrame, root: str) -> pd.DataFrame:
     return filtered_pred
 
 
-def _predict_parquet(filtered_truth: pd.DataFrame, root: str) -> pd.DataFrame:
-    """Run the parquet ingest pipeline for every labeled (stock, day) and return predictions.
+def _predict_parquet(
+    filtered_truth: pd.DataFrame,
+    root: str,
+    norm_universe: list[str] | None = None,
+    norm_universe_path: str | None = None,
+) -> pd.DataFrame:
+    """Run the parquet ingest pipeline and return predictions for labeled keys only.
 
-    Mirrors ``_predict_local`` but routes through ``ingest_parquet`` (the new
-    English-schema corpus) and is **driven by the labeled keys only** — the real
-    corpus is ~13 GB/day, so we never load the full universe (inventory §6).
+    Loads ``labeled_keys ∪ norm_universe`` (filtered parquet reads — never the
+    whole ~5k/day stream) so ``normalize_matrix`` ranks against a realistic panel,
+    then restricts output to the labeled keys for scoring.
     """
-    from src import aggregate, label as label_mod, postprocess
-    from src.ingest_parquet import load_parquet, read_cancel_frame_parquet
+    from src import label as label_mod, postprocess
 
     dates = filtered_truth["transaction_date"].astype(str).unique().tolist()
+    extra_universe = _resolve_norm_universe_codes(norm_universe, norm_universe_path)
 
     all_pred_rows = []
     for date in dates:
-        keys = (
+        labeled_keys = (
             filtered_truth.loc[
                 filtered_truth["transaction_date"].astype(str) == str(date), "stock_code"
-            ].astype(str).unique().tolist()
+            ]
+            .astype(str)
+            .unique()
+            .tolist()
         )
-        df = load_parquet(root, date, keys=keys)
-        if df is None or df.empty:
-            log.warning("_predict_parquet: no data for date %s under %s", date, root)
-            continue
-
-        # Cancel frames for the labeled keys → real CB features.
-        cancel_lookup: dict = {}
-        for code in keys:
-            try:
-                cancel_lookup[(code, str(date))] = read_cancel_frame_parquet(root, date, code)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("_predict_parquet: cancel read failed for %s/%s: %s", date, code, exc)
-
-        matrix = aggregate.build_feature_matrix(
-            df, has_cancel_table=True, cancel_lookup=cancel_lookup
-        )
+        matrix = _build_parquet_matrix(root, date, labeled_keys, extra_universe)
         if matrix.empty:
             log.warning("_predict_parquet: empty feature matrix for date %s", date)
             continue
 
         weak = label_mod.weak_label_matrix(matrix)
         predict_df = postprocess.assemble_predict(weak)
+
+        labeled_set = set(labeled_keys)
+        predict_df = predict_df[predict_df["stock_code"].astype(str).isin(labeled_set)]
         all_pred_rows.append(predict_df)
 
     if not all_pred_rows:
@@ -365,6 +452,15 @@ def run(argv: list[str] | None = None) -> int:
         default=None,
         help="Restrict scoring to a single date YYYYMMDD (optional).",
     )
+    parser.add_argument(
+        "--norm-universe",
+        default=None,
+        dest="norm_universe",
+        help=(
+            "CSV/xlsx of stock codes for the rank-normalization panel when using "
+            "parquet: input (default: samples/stock-samples.xlsx if present)."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -404,7 +500,11 @@ def run(argv: list[str] | None = None) -> int:
 
     # --- Get predictions ---
     try:
-        result = predict_for_keys(filtered_truth, args.input)
+        result = predict_for_keys(
+            filtered_truth,
+            args.input,
+            norm_universe_path=args.norm_universe,
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"ERROR: prediction failed: {exc}", file=sys.stderr)
         return 1

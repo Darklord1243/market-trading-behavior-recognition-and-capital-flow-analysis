@@ -288,3 +288,40 @@ def test_cancel_frame_carries_true_latency_ms(tmp_path):
 # is kept per the LIS §6 Track L disposition. `latency_ms` above stays available,
 # correct, and tested for a future re-thresholded feature — but is NOT consumed by
 # _cb_features, so there is no proxy→true swap test here by design.
+
+
+# ---------------------------------------------------------------------------
+# A — measurement fix: normalize labeled keys against a real universe panel
+# (not just the cherry-picked labeled set) — but still SCORE only labeled keys.
+# ---------------------------------------------------------------------------
+
+def test_load_universe_codes_reads_codes(tmp_path):
+    """_load_universe_codes reads stock codes from a CSV/xlsx (股票代码 or stock_code)."""
+    harness = _import_harness()
+    p = tmp_path / "univ.csv"
+    pd.DataFrame({"股票代码": ["000001.SZ", "600000.SH"]}).to_csv(p, index=False, encoding="utf-8")
+    assert set(harness._load_universe_codes(str(p))) == {"000001.SZ", "600000.SH"}
+
+
+def test_build_parquet_matrix_uses_union_panel(tmp_path):
+    """The feature matrix is built over (labeled ∪ universe) so rank-normalization
+    sees a realistic panel, not only the labeled keys."""
+    harness = _import_harness()
+    root = write_tiny_parquet(str(tmp_path))
+    m = harness._build_parquet_matrix(root, _DATE, ["000001.SZ"], ["000001.SZ", "600000.SH"])
+    codes = {(i[0] if isinstance(i, tuple) else i) for i in m.index}
+    assert codes == {"000001.SZ", "600000.SH"}, f"panel should include universe, got {codes}"
+
+
+def test_predict_parquet_norm_universe_excludes_universe_from_output(tmp_path):
+    """With a norm_universe, the extra stocks shape normalization but are NOT scored —
+    output is restricted to the labeled keys."""
+    harness = _import_harness()
+    root = write_tiny_parquet(str(tmp_path))
+    truth = pd.DataFrame({
+        "stock_code": ["000001.SZ"], "transaction_date": [_DATE],
+        "capital_type": ["游资"], "capital_intention": ["买入"],
+        "source": ["https://s"], "confidence": [0.8], "notes": ["n"],
+    })
+    preds = harness._predict_parquet(truth, root, norm_universe=["600000.SH"])
+    assert set(preds["stock_code"].astype(str)) == {"000001.SZ"}
