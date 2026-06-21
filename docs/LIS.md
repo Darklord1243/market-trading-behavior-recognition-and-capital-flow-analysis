@@ -7,13 +7,39 @@
 
 | | |
 |---|---|
-| **Version** | **v1.5.5** (2026-06-18) |
+| **Version** | **v1.5.7** (2026-06-21) |
 | **Pipeline entry** | `python main.py --input <xlsx|glob> -o outputs/ [--date YYYYMMDD]` |
-| **Tests** | `pytest tests/` → **101 passing** (verified 2026-06-18; 37 pre-Track-L → 67 Track-L-a → 74 Phase-1 → 79 Track-V → 86 Phase-1b → 93 Track-L-b → 101 Phase-2) |
+| **Tests** | `pytest tests/` → **114 passing** (verified 2026-06-21; … → 105 Track-V V.4 → 113 Track P.1 → 114 Track L-c infra) |
 | **Branch at authoring** | `feat/task2-3class-capital-type` |
 | **Canonical source of truth** | brief `docs/AFAC2026_Track1_Project_Brief.docx` (Rev. 7) + `docs/competition-spec/` |
 
 ### Changelog
+- **v1.5.7 (2026-06-21)** — **Track P.1 landed** (commit `d500d60`): `src/ingest_parquet.py` — filtered
+  parquet reads (`SecuCode` predicate + column projection; never whole-stream); maps bare `SecuCode` →
+  exchange-suffixed `stock_code`, prices ÷100, `HHMMSSmmm` → pipeline datetime contract; cancels from unified
+  `order` (委托补全) via `OrderType ∈ {-1,-11}`; emits the same cleaned-frame contract as `ingest_local.load_local`.
+  `scripts/validate_offline.py` extended with `parquet:<root>` input (labeled-key-only load). 8 new tests; suite
+  **105 → 113 green**. **V.3 0618 addendum** (commit `c8f9f93`): 10 scorable cited rows on `20260618` (游资=4,
+  量化=3, 散户=3). **Parquet baseline (L-c "before"):** `parquet:data/202606` → **weighted_f1 = 0.4917** (n=10;
+  ~30 s vs ~75 min full-universe `local:data`). **Track L-c evaluated (not shipped):** true order→cancel
+  `latency_ms` landed in `read_cancel_frame_parquet` (100% OrderID linkage, decoded ms, minute-boundary test), but
+  the proxy→true swap for `cb_fast_cancel_ratio` moved real proxy-F1 **down 0.4917 → 0.4381** on the 0618 seed
+  (sub-`CB_FAST_CANCEL_MS` true latency is vanishingly rare); **kept the inter-cancel proxy** per §6 Track L
+  disposition; `latency_ms` stays available for a future re-thresholded feature + more labels/days. Suite **113 →
+  114 green**.
+- **v1.5.6 (2026-06-21)** — **Track V V.4 + V.3 landed.** **V.4** (commit `737ed5a`): offline harness
+  `scripts/validate_offline.py` — runs the pipeline on labeled keys, joins to truth, **calls**
+  `validate.weighted_f1`, prints per-class proxy-F1; EXAMPLE / `confidence==0` rows dropped; `local:<root>` or
+  precomputed-CSV input; **not wired into `main.py`/inference** (grep-clean). 4 new tests; suite **101 → 105 green**.
+  **V.3** (commit `0d1263d`, human-seeded): `tests/fixtures/validation_labels.csv` now has **22 scorable cited rows**
+  (散户=14, 游资=8, 量化=0) across 20260611/20260612, all sourced to public East Money 龙虎榜 (LHB) pages; header
+  matches the schema lock, `illegal labels: set()`. **Baseline offline proxy-F1 (`local:data`) = 0.1071 (0611, n=12) /
+  0.2857 (0612, n=10).** Honest caveat: thin seed — 15/22 SUMMARY-only, 9/22 conf<0.5, **量化 unscored** (0 support);
+  游资 over-predicted, 散户 recall 0 (a `src/rules.py` ceiling, **not** ingest/CB latency). Unblocks the **Track L-c**
+  proxy-F1 gate. **Next (Batch 3 plan):** the parquet corpus (`data/202606`) is **0618-only**, so the L-c
+  before→after must run on `parquet:data/202606` against a **new 0618 V.3 addendum** — the 0611/0612 labels do **not**
+  join the parquet days; P.1 (`src/ingest_parquet.py`) + a `parquet:` input scheme for `validate_offline` precede the
+  L-c re-baseline.
 - **v1.5.5 (2026-06-18)** — **Phase 2 landed** (commit `f932504`): fixed the RS resolution bug in
   `features._rs_features`. Interval computation is now **dtype-portable** —
   `group["datetime_utc"].diff().dropna().dt.total_seconds() * 1000` replaces the
@@ -205,7 +231,8 @@ with near-random Task-2 output on real features.**
 | Module | State | Notes |
 |---|---|---|
 | `src/ingest.py` | ✅ real | 65-col read, Beijing clock, cumulative→tick diff, cancel-table detector, book-JSON parser |
-| `src/ingest_local.py` | ✅ real (**L-a**) | Track L: local GBK-CSV adapter — multi-stock `行情`/`委托`/`成交`, Beijing time direct from `时间`, explicit book→JSON, per-exchange cancel reconstruction, `cb_available=1.0` plumbed. CB **values now real** via `features._cb_features` (Track L-b, `87a60a8`); `read_cancel_frame` still returns `side`/`cancel_time`/`cancel_qty` (order-ref columns not yet carried → fast-cancel is an inter-cancel proxy, Track L-c). `load_raw` untouched. |
+| `src/ingest_local.py` | ✅ real (**L-a**) | Track L: local GBK-CSV adapter — multi-stock `行情`/`委托`/`成交`, Beijing time direct from `时间`, explicit book→JSON, per-exchange cancel reconstruction, `cb_available=1.0` plumbed. CB **values now real** via `features._cb_features` (Track L-b, `87a60a8`); `read_cancel_frame` still returns `side`/`cancel_time`/`cancel_qty` (order-ref columns not yet carried → fast-cancel is an inter-cancel proxy on this path). `load_raw` untouched. |
+| `src/ingest_parquet.py` | ✅ real (**P.1**, `d500d60`) | Parquet L2 adapter for `data/202606/` — filtered reads on `SecuCode`, English schema, ÷100 prices, unified `order` cancels. `read_cancel_frame_parquet` emits `latency_ms` via OrderID self-join (100% linkage, decoded ms; **L-c infra**, not consumed by `_cb_features`). `load_raw` / `ingest_local` untouched. |
 | `src/features.py` | 🟡 **32 of 89 features**; RS family **dtype-portable (Phase 2, `f932504`)** | See gap table below. `_rs_features` now uses `.diff().dt.total_seconds()*1000` (dtype-safe across `[ms]`/`[ns]`); `rs_burst_ratio` = share `< RS_BURST_THRESHOLD_MS` (100ms, absolute); `+rs_split_similarity`. Fixture cv 13.48→1.34, burst 0.99→0. **§7-R1 resolved.** Scope: RS only (PI uses `hour`/`minute`, untouched). |
 | `src/aggregate.py` | ✅ real (thin) | groups → daily matrix. `compute_window_features` is an unused seam. |
 | `src/normalize.py` | ✅ real (**Phase 1**), **wired (Phase 1b)** | H1 seam: cross-sample within-day rank→[0,1] (`(r-1)/(n-1)`; excludes `cb_available`/`n_ticks`; n≤1 / constant→0.5). Now **called by `label.weak_label_matrix`** before capital scoring (commit `18cca42`). |
@@ -223,7 +250,7 @@ with near-random Task-2 output on real features.**
 |---|---|---|---|
 | 10-level snapshot | ✅ have | OBP, PI, OFI, partial OSS | `行情.csv` (66-col explicit book), **7,574 stk × 2 days** local; plus the n=1 `samples/AFAC2026.xlsx` |
 | tick-trade | ✅ have | RS cadence, AP runs, TRD, OSS amount splits | `逐笔成交.csv` (~125k rows/stk) |
-| tick-cancel | ✅ **values live (L-b, `87a60a8`)** | **CB family — strongest 游资/量化 separator** | Track-L adapter (`ingest_local.py`) reconstructs embedded cancels — SZ `逐笔成交.成交代码=='C'` (~22%), SH `逐笔委托.委托类型=='D'` (~24%) — `cb_available=1.0`. CB feature **values** now real (cancel/order + cancel/volume ratios, buy/sell cancel split, fast-cancel ratio). **Fast-cancel = inter-cancel interval proxy**, not true order→cancel latency; cancel-interval CV not in `CB_KEYS` — both await the order-ref join (**Track L-c**). |
+| tick-cancel | ✅ **values live (L-b, `87a60a8`)** | **CB family — strongest 游资/量化 separator** | Track-L adapter (`ingest_local.py`) reconstructs embedded cancels — SZ `逐笔成交.成交代码=='C'` (~22%), SH `逐笔委托.委托类型=='D'` (~24%) — `cb_available=1.0`. CB feature **values** now real (cancel/order + cancel/volume ratios, buy/sell cancel split, fast-cancel ratio). **Fast-cancel = inter-cancel interval proxy** (kept after L-c gate); parquet path also computes true `latency_ms` (OrderID self-join) but it is **not wired into `cb_fast_cancel_ratio`** — swap regressed proxy-F1 0.4917→0.4381 on the 0618 seed. |
 | tick-order (order-level) | ✅ have | PD family (23 fields), iceberg `rs_split_*` | `逐笔委托.csv` (~139k rows/stk) |
 
 > **Format caveat:** the local corpus is **per-stock GBK CSVs with Chinese headers + explicit 10-level columns**,
@@ -357,10 +384,14 @@ backtest answers (§3.3 auto-DQ). Validation labels are **post-market public inf
 - [ ] **V.2** Implement `src/validate.py::weighted_f1(pred_df, truth_df) -> dict`: inner-join on
       `(stock_code, transaction_date)`, return weighted + per-class P/R/F1 and support. **Pure, offline, no network,
       no read of board answers.** Run → pass.
-- [ ] **V.3** Seed `tests/fixtures/validation_labels.csv` with **≥8** human-labeled (stock, day) rows, each citing a
-      public source (龙虎榜 URL / news) and a per-row `confidence` (human action — see §below).
-- [ ] **V.4** Add an **offline-only** harness (`scripts/validate_offline.py` or a notebook, **NOT** wired into
-      `main.py`'s inference): run the pipeline on the labeled stock-days, join to the truth set, print proxy F1.
+- [x] **V.3** ✅ (commits `0d1263d` + `c8f9f93`) — `tests/fixtures/validation_labels.csv` seeded with cited rows.
+      **0611/0612 set** (`0d1263d`): 22 scorable (散户=14, 游资=8, 量化=0); baseline `local:data` = 0.1071 (0611,
+      n=12) / 0.2857 (0612, n=10). **0618 parquet addendum** (`c8f9f93`): 10 scorable (游资=4, 量化=3, 散户=3);
+      baseline `parquet:data/202606` = **0.4917** (n=10) — **L-c "before"** on the active parquet SoT.
+- [x] **V.4** ✅ (commit `737ed5a`) — offline-only harness `scripts/validate_offline.py` (**NOT** wired into
+      `main.py`'s inference): runs the pipeline on the labeled stock-days, joins to the truth set, calls
+      `validate.weighted_f1`, prints proxy-F1; EXAMPLE/`confidence==0` rows dropped. Extended with `parquet:<root>`
+      (P.1). Suite 101 → 105 → 113.
 
 **How it feeds H1–H5 acceptance (additive, not a replacement):**
 - Phase 1b, Phase 2, each Phase 3 batch: the PR records the **proxy-F1 before/after** on the seed set *in addition
@@ -619,14 +650,12 @@ CB, and Track V's real-data proxy.
 > math for all 5 `CB_KEYS`, plumbed via `cancel_lookup`; suite 86→93. **Sequencing (2026-06-18):** L-b ran **after
 > Phase 1b, before Phase 2**.
 >
-> **🟡 Track L-c OPEN (deferred follow-up — true order→cancel latency).** L-b's `cb_fast_cancel_ratio` is an
-> **inter-cancel interval proxy** (consecutive `cancel_time` diffs `< CB_FAST_CANCEL_MS`), correct within a minute
-> but distorted across minute boundaries and *not* the true order→cancel latency. Making it true requires extending
-> `read_cancel_frame` to retain order-ref columns (SZ `叫买/卖序号`, SH `交易所委托号`), matching each cancel to its
-> originating order, and computing real latency; the same join unlocks `cb_cancel_interval_cv` (a ref-set extra not
-> yet in `CB_KEYS`). **Disposition:** keep deferred — *not* a Batch-2 blocker. **Do it after Batch 2 (post-Phase 2),
-> and gate the win on Track V proxy-F1 once V.3 labels exist** (a proxy→true swap that doesn't move the proxy F1 is
-> not worth the added ingest complexity). Audit risk: none (intraday, same-day cancel stream).
+> **🟡 Track L-c EVALUATED — proxy kept (v1.5.7).** True order→cancel `latency_ms` is implemented in
+> `read_cancel_frame_parquet` (OrderID self-join, decoded ms, 100% linkage on 委托补全; minute-boundary test green),
+> but swapping it into `cb_fast_cancel_ratio` **regressed** the real proxy-F1 on the 0618 seed (**0.4917 → 0.4381**)
+> because genuine sub-`CB_FAST_CANCEL_MS` latency is vanishingly rare while the inter-cancel burstiness proxy carries
+> more class signal. **Disposition:** keep the inter-cancel proxy per the Track V gate; `latency_ms` infra stays for a
+> future re-thresholded fast-cancel / latency-distribution feature (revisit with more labels/days). Audit risk: none.
 
 ---
 
