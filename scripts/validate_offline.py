@@ -165,6 +165,13 @@ def _get_predictions(
         else:
             root = "data"
         return _predict_local(filtered_truth, root)
+    elif src.lower().startswith("parquet"):
+        # parquet:<root> or just "parquet" (default root = data/202606)
+        if ":" in src:
+            root = src.split(":", 1)[1].strip() or "data/202606"
+        else:
+            root = "data/202606"
+        return _predict_parquet(filtered_truth, root)
     else:
         # Treat src as a path to a precomputed prediction CSV
         if not os.path.isfile(src):
@@ -239,6 +246,62 @@ def _predict_local(filtered_truth: pd.DataFrame, root: str) -> pd.DataFrame:
     combined["transaction_date"] = combined["transaction_date"].astype(str)
     filtered_pred = combined.merge(keys, on=["stock_code", "transaction_date"], how="inner")
     return filtered_pred
+
+
+def _predict_parquet(filtered_truth: pd.DataFrame, root: str) -> pd.DataFrame:
+    """Run the parquet ingest pipeline for every labeled (stock, day) and return predictions.
+
+    Mirrors ``_predict_local`` but routes through ``ingest_parquet`` (the new
+    English-schema corpus) and is **driven by the labeled keys only** — the real
+    corpus is ~13 GB/day, so we never load the full universe (inventory §6).
+    """
+    from src import aggregate, label as label_mod, postprocess
+    from src.ingest_parquet import load_parquet, read_cancel_frame_parquet
+
+    dates = filtered_truth["transaction_date"].astype(str).unique().tolist()
+
+    all_pred_rows = []
+    for date in dates:
+        keys = (
+            filtered_truth.loc[
+                filtered_truth["transaction_date"].astype(str) == str(date), "stock_code"
+            ].astype(str).unique().tolist()
+        )
+        df = load_parquet(root, date, keys=keys)
+        if df is None or df.empty:
+            log.warning("_predict_parquet: no data for date %s under %s", date, root)
+            continue
+
+        # Cancel frames for the labeled keys → real CB features.
+        cancel_lookup: dict = {}
+        for code in keys:
+            try:
+                cancel_lookup[(code, str(date))] = read_cancel_frame_parquet(root, date, code)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("_predict_parquet: cancel read failed for %s/%s: %s", date, code, exc)
+
+        matrix = aggregate.build_feature_matrix(
+            df, has_cancel_table=True, cancel_lookup=cancel_lookup
+        )
+        if matrix.empty:
+            log.warning("_predict_parquet: empty feature matrix for date %s", date)
+            continue
+
+        weak = label_mod.weak_label_matrix(matrix)
+        predict_df = postprocess.assemble_predict(weak)
+        all_pred_rows.append(predict_df)
+
+    if not all_pred_rows:
+        return pd.DataFrame(columns=["stock_code", "transaction_date", "capital_type"])
+
+    combined = pd.concat(all_pred_rows, ignore_index=True)
+
+    keys_df = filtered_truth[["stock_code", "transaction_date"]].copy()
+    keys_df["stock_code"] = keys_df["stock_code"].astype(str)
+    keys_df["transaction_date"] = keys_df["transaction_date"].astype(str)
+    combined["stock_code"] = combined["stock_code"].astype(str)
+    combined["transaction_date"] = combined["transaction_date"].astype(str)
+    return combined.merge(keys_df, on=["stock_code", "transaction_date"], how="inner")
 
 
 # ---------------------------------------------------------------------------
