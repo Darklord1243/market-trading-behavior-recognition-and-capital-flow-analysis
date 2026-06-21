@@ -7,13 +7,23 @@
 
 | | |
 |---|---|
-| **Version** | **v1.5.7** (2026-06-21) |
+| **Version** | **v1.5.8** (2026-06-21) |
 | **Pipeline entry** | `python main.py --input <xlsx|glob> -o outputs/ [--date YYYYMMDD]` |
 | **Tests** | `pytest tests/` → **114 passing** (verified 2026-06-21; … → 105 Track-V V.4 → 113 Track P.1 → 114 Track L-c infra) |
 | **Branch at authoring** | `feat/task2-3class-capital-type` |
 | **Canonical source of truth** | brief `docs/AFAC2026_Track1_Project_Brief.docx` (Rev. 7) + `docs/competition-spec/` |
 
 ### Changelog
+- **v1.5.8 (2026-06-21)** — **Track V V.3 0617 addendum + Phase 3 re-baseline (combined set).** Appended
+  **13 cited 20260617 LHB rows** to `tests/fixtures/validation_labels.csv` (游资=2, 量化=5, 散户=6; slash-form
+  source URLs). Real **20260617 parquet now present** in `data/202606` (all 5 streams). Combined label set =
+  **24 scorable rows** across 20260617/20260618 (0 dup keys). **Pre-append verified** (`scripts/_verify_0617_labels.py`):
+  schema/enum/confidence valid **and** parquet scorability — all 24 codes return ticks (`cb_available=1.0`).
+  **Honest combined baseline** (`parquet:data/202606`, no `--date`): **weighted_f1 = 0.3371 (n=24)** | 游资 R=0.67
+  F1=0.50 | 量化 R=0.88 F1=0.64 | **散户 R=0.00 F1=0.00 (0/10)**. 散户 recall is now 0 on **all 10** retail names
+  (was 4/4 on 0618 alone) — robust confirmation that 散户's inverse-residual definition in `rules.py` is a
+  **feature gap**, not threshold tuning. **This 0.3371 is the new gate** that Phase 4/5 (the 散户 dispersion/
+  diffuseness feature B) must beat. No `src/` change; suite unchanged (114 green).
 - **v1.5.7 (2026-06-21)** — **Track P.1 landed** (commit `d500d60`): `src/ingest_parquet.py` — filtered
   parquet reads (`SecuCode` predicate + column projection; never whole-stream); maps bare `SecuCode` →
   exchange-suffixed `stock_code`, prices ÷100, `HHMMSSmmm` → pipeline datetime contract; cancels from unified
