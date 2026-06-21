@@ -6,18 +6,18 @@ Three-class rule-based discrimination grounded in A-share financial priors:
   * 量化 (quant): small/frequent/balanced orders, machine cadence — LOW
     inter-event interval CV, HIGH burst ratio, high fast-cancel when a cancel
     table is present. Regular, dense, symmetric.
-  * 散户 (retail): a guarded RESIDUAL — small orders but LOW order frequency,
-    HIGH/irregular interval CV (no cadence), LOW unilateral aggression, diffuse
-    timing (no open/close concentration), near-zero burst structure.
-
-IMPORTANT — the 量化/散户 split is RHYTHM-based, not SIZE-based. Both are
-small-order classes; what separates them is execution regularity/persistence
-(量化 = machine cadence, 散户 = no cadence). Do not "fix" this back to order size.
+  * 散户 (retail): diffuse order flow — many small orders by COUNT (not amount),
+    few mega prints, and (CB-gated) a LOW fast-cancel rate (retail is not an
+    algo). These are the diagnostic-confirmed separators (design spec §1.1);
+    requires a positive win margin over BOTH 游资 and 量化 to be assigned.
 
 These rules never reference a specific stock/date (compliance hard-rule #2) and use
-intraday-only features. Per-feature normalisation is the existing z-score / rank
-form; class weights are 1.0 stubs (equal) — only the dimension *routing* into the
-three scores is real here, weight-tuning remains future work.
+intraday-only features. NOTE: there is NO cross-sample normalisation yet — `_class_score`
+applies `_clip01(raw)` directly, so any feature outside [0, 1] saturates (e.g.
+`rs_interval_cv`). Rank/quantile normalisation across the daily stock panel is the planned
+fix (see docs/LIS.md Phase 1, `src/normalize.py`); class weights are 1.0 stubs (equal) —
+only the dimension *routing* into the three scores is real here, weight-tuning remains
+future work.
 """
 
 from __future__ import annotations
@@ -64,24 +64,26 @@ DIMS_QUANT = [
     ("cb_fast_cancel_ratio", True, True),     # fast cancels (HFT) [CB]
 ]
 
-# 散户: retail residual — small orders, NO cadence (HIGH interval CV, LOW burst),
-# LOW aggression, diffuse timing (LOW concentration). Inverse-of-aggression AND
-# inverse-of-machine-rhythm: weak on every "someone is driving this name" axis.
+# 散户: retail DIFFUSENESS — positive signal (not an inverse residual). Many small
+# orders by COUNT, few mega prints, and (CB-gated) a LOW fast-cancel rate (retail is
+# not an algo). These are the diagnostic-confirmed separators (see design spec §1.1);
+# the old rhythm/inverse dims (rs_*, ap_unilateral LOW, oss_small_amount) were dead or
+# anti-signal on the real cross-section and were removed.
 DIMS_RETAIL = [
-    ("oss_small_amount_pct", True, False),    # small-order dominance
-    ("rs_interval_cv", True, False),          # HIGH/irregular CV -> no cadence
-    ("rs_burst_ratio", False, False),         # LOW -> near-zero burst structure
-    ("ap_unilateral_intensity", False, False),# LOW -> low aggression
-    ("pi_time_concentration", False, False),  # LOW -> diffuse timing
+    ("oss_small_count_pct", True, False),     # many small orders by count
+    ("oss_mega_count_pct", False, False),     # few mega prints
+    ("cb_fast_cancel_ratio", False, True),    # retail rarely fast-cancels [CB]
 ]
 
 NEUTRAL = 0.5  # an absent feature casts no vote: +0.5 to that class score
-# 散户 is a GUARDED residual: it may only win the arg-max when BOTH 游资 and 量化
-# are weak (neither score clears NEUTRAL by more than this margin on the same
-# normalised scale). This stops a genuinely balanced, high-rhythm quant day (low
-# directional imbalance) from falling into retail by default — the single most
-# likely failure mode of a naive 3-way. Global constant, not a per-stock value.
-RETAIL_GATE_MARGIN = 0.05
+# 散户 wins only when its OWN evidence beats BOTH 游资 and 量化 by this margin (a
+# RELATIVE win margin, not an absolute veto). This preserves the "no accidental
+# residual win" hedge while removing the obsolete absolute gate, which mis-fired on
+# limit-down names (high ap_unilateral_intensity pushed score_yz above the old gate
+# and vetoed a genuine 散户). OQ-1 resolved the 3-class question, so the absolute
+# hedge is no longer needed. Global constant; value carried from the old gate margin
+# and is NOT fitted to labels.
+RETAIL_WIN_MARGIN = 0.05
 
 
 def _clip01(x: float) -> float:
@@ -110,9 +112,9 @@ def score_capital_type(feat: dict) -> tuple[str, list]:
     """Return (capital_type, [score_youzi, score_quant, score_retail]).
 
     Three continuous class scores (each in [0, 1]) and their guarded arg-max.
-    散户 is suppressed unless BOTH 游资 and 量化 are weak (§ retail guard); if
-    either shows real signal, the arg-max is between those two only. No hard
-    thresholds beyond the residual gate — labels are produced in Stage-2.
+    散户 wins only when score_rt beats BOTH 游资 and 量化 by RETAIL_WIN_MARGIN;
+    otherwise the arg-max is between 游资/量化 only. No per-stock thresholds —
+    labels are produced in Stage-2.
     """
     cb_available = float(feat.get("cb_available", 0.0)) > 0.0
     score_yz = _class_score(feat, DIMS_YOUZI, cb_available)
@@ -120,9 +122,9 @@ def score_capital_type(feat: dict) -> tuple[str, list]:
     score_rt = _class_score(feat, DIMS_RETAIL, cb_available)
     scores = [score_yz, score_qt, score_rt]
 
-    # Retail guard: 散户 eligible only when neither 游资 nor 量化 has real signal.
-    gate = NEUTRAL + RETAIL_GATE_MARGIN
-    retail_eligible = (score_yz <= gate) and (score_qt <= gate)
+    # Retail guard (relative): 散户 eligible only when its score beats BOTH 游资 and
+    # 量化 by RETAIL_WIN_MARGIN. Otherwise the arg-max is between 游资/量化 only.
+    retail_eligible = score_rt >= max(score_yz, score_qt) + RETAIL_WIN_MARGIN
     eligible = [0, 1, 2] if retail_eligible else [0, 1]
 
     best = max(eligible, key=lambda i: scores[i])

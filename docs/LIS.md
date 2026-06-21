@@ -7,13 +7,25 @@
 
 | | |
 |---|---|
-| **Version** | **v1.5.8** (2026-06-21) |
+| **Version** | **v1.5.9** (2026-06-22) |
 | **Pipeline entry** | `python main.py --input <xlsx|glob> -o outputs/ [--date YYYYMMDD]` |
-| **Tests** | `pytest tests/` → **114 passing** (verified 2026-06-21; … → 105 Track-V V.4 → 113 Track P.1 → 114 Track L-c infra) |
+| **Tests** | `pytest tests/` → **119 passing** (verified 2026-06-22; … → 114 Track L-c infra → **119 Feature B B.0**) |
 | **Branch at authoring** | `feat/task2-3class-capital-type` |
 | **Canonical source of truth** | brief `docs/AFAC2026_Track1_Project_Brief.docx` (Rev. 7) + `docs/competition-spec/` |
 
 ### Changelog
+- **v1.5.9 (2026-06-22)** — **Feature B slice B.0 landed** (`rules.py` retail routing + relative guard). Rewired
+  `DIMS_RETAIL` from inverse/dead dims (`oss_small_amount_pct`, `ap_unilateral_intensity`, dead `rs_*`) to
+  diagnostic-confirmed **positive** retail priors: high `oss_small_count_pct`, low `oss_mega_count_pct`, low
+  `cb_fast_cancel_ratio` (CB-gated). Replaced the obsolete **absolute** retail veto (`score_yz/qt <= NEUTRAL+margin`)
+  with a **relative win margin**: `score_rt >= max(score_yz, score_qt) + RETAIL_WIN_MARGIN` (`0.05`, not
+  label-fitted). Offline harness gains `score_rows()` + `--verbose-scores` per-row attribution. 2 new tests; suite
+  **114 → 119 green**. **Combined parquet proxy-F1** (`parquet:data/202606`, n=24): **0.3371 → 0.6094** | 游资
+  P/R/F1 0.57/0.67/0.62 (support=6, unchanged recall) | 量化 0.58/0.88/0.70 (support=8) | **散户 0.80/0.40/0.53
+  (support=10; recall 0 → 4/10)**. One FP: 002856.SZ (truth 游资 → pred 散户). **This 0.6094 is the new gate** for
+  Feature B slice **B.2** (deal-stream size-heterogeneity entropy). B.1 (`retail_diffuseness_idx` composite) is
+  **optional/off critical path** (score-equivalent to B.0 under equal weights). Spec:
+  `docs/superpowers/specs/2026-06-22-retail-dispersion-feature-design.md`.
 - **v1.5.8 (2026-06-21)** — **Track V V.3 0617 addendum + Phase 3 re-baseline (combined set).** Appended
   **13 cited 20260617 LHB rows** to `tests/fixtures/validation_labels.csv` (游资=2, 量化=5, 散户=6; slash-form
   source URLs). Real **20260617 parquet now present** in `data/202606` (all 5 streams). Combined label set =
@@ -246,7 +258,7 @@ with near-random Task-2 output on real features.**
 | `src/features.py` | 🟡 **32 of 89 features**; RS family **dtype-portable (Phase 2, `f932504`)** | See gap table below. `_rs_features` now uses `.diff().dt.total_seconds()*1000` (dtype-safe across `[ms]`/`[ns]`); `rs_burst_ratio` = share `< RS_BURST_THRESHOLD_MS` (100ms, absolute); `+rs_split_similarity`. Fixture cv 13.48→1.34, burst 0.99→0. **§7-R1 resolved.** Scope: RS only (PI uses `hour`/`minute`, untouched). |
 | `src/aggregate.py` | ✅ real (thin) | groups → daily matrix. `compute_window_features` is an unused seam. |
 | `src/normalize.py` | ✅ real (**Phase 1**), **wired (Phase 1b)** | H1 seam: cross-sample within-day rank→[0,1] (`(r-1)/(n-1)`; excludes `cb_available`/`n_ticks`; n≤1 / constant→0.5). Now **called by `label.weak_label_matrix`** before capital scoring (commit `18cca42`). |
-| `src/rules.py` | 🟡 real routing, **no cross-sample normalization** | 3-class scorer + 散户 guard + intent gate. Uses `clip01(raw)`, which **saturates** features outside [0,1] (even a *correct* `rs_interval_cv≈1.34` clips to 1.0) → see §7-R1. Class weights are **1.0 stubs**. (Docstring corrected in v1.1 — it had wrongly claimed "z-score/rank".) |
+| `src/rules.py` | ✅ **B.0 landed** | 3-class scorer + **relative** retail win margin (`RETAIL_WIN_MARGIN=0.05`). `DIMS_RETAIL` = positive diffuseness priors (`oss_small_count_pct` HIGH, `oss_mega_count_pct` LOW, `cb_fast_cancel_ratio` LOW, CB-gated). 游资/量化 dim sets unchanged. Scoring runs on rank-normalized rows via `label.weak_label_matrix` (Phase 1b). |
 | `src/label.py` | ✅ real (thin), **normalize-wired (Phase 1b)** | weak labels + confidence (top1−top2 margin; intent gate clearance). Scores capital on `normalize_matrix(matrix)` rows; intent gate (`get_intention`/`_intent_confidence`) reads **raw** rows (absolute thresholds). Red-first panel test in `tests/test_label.py`. |
 | `src/model.py` | ⛔ **STUB** (pass-through) | `CapitalTypeHead.fit/predict` return weak labels unchanged. Seam ready for LightGBM. |
 | `src/cluster.py` | ⛔ **STUB-grade** | `DEFAULT_K=8` clamped, `min(k,n)`; 4 hard-coded pattern predicates; degrades to K=1 on fixture. No K-sweep, Euclidean only. |
@@ -401,7 +413,16 @@ backtest answers (§3.3 auto-DQ). Validation labels are **post-market public inf
 - [x] **V.4** ✅ (commit `737ed5a`) — offline-only harness `scripts/validate_offline.py` (**NOT** wired into
       `main.py`'s inference): runs the pipeline on the labeled stock-days, joins to the truth set, calls
       `validate.weighted_f1`, prints proxy-F1; EXAMPLE/`confidence==0` rows dropped. Extended with `parquet:<root>`
-      (P.1). Suite 101 → 105 → 113.
+      (P.1). **`--verbose-scores`** + `score_rows()` (B.0) print per-row `[游资,量化,散户]` + retail margin +
+      eligibility. Suite 101 → 105 → 113 → **119** (B.0).
+
+**Current proxy-F1 baselines (parquet SoT, `tests/fixtures/validation_labels.csv`):**
+
+| Set | n | weighted_f1 | 散户 R | Notes |
+|---|---|---|---|---|
+| 0618 only (pre–Fix A panel) | 10 | 0.4917 | 0/3 | superseded for gating |
+| Combined 0617+0618 (pre–B.0) | 24 | 0.3371 | 0/10 | v1.5.8 gate |
+| Combined 0617+0618 (**post–B.0**) | 24 | **0.6094** | **4/10** | **active gate for B.2** |
 
 **How it feeds H1–H5 acceptance (additive, not a replacement):**
 - Phase 1b, Phase 2, each Phase 3 batch: the PR records the **proxy-F1 before/after** on the seed set *in addition
@@ -423,6 +444,41 @@ offline harness prints a proxy-F1 number later phases can diff against.
 
 **Audit risk:** none (offline, public post-market labels, never touches inference or board answers).
 **Dependencies:** none to start; becomes useful the moment Phase 1b emits real labels.
+
+---
+
+### Feature B — 散户 dispersion / diffuseness  ⟵ **ACTIVE; B.0 ✅, B.2 NEXT**
+
+> **Design spec:** `docs/superpowers/specs/2026-06-22-retail-dispersion-feature-design.md` · **Plan:**
+> `docs/superpowers/plans/2026-06-22-retail-dispersion-feature.md` · **Sonnet prompt (B.0, done):**
+> `docs/prompts/sonnet-feature-b-b0-routing-guard.md`
+
+**Problem (v1.5.8):** combined n=24 proxy-F1 = 0.3371 with **散户 R=0/10** — inverse-residual `DIMS_RETAIL` voted
+on anti-signals; absolute retail guard vetoed limit-down names before diffuseness scores mattered.
+
+**B.0 ✅ (v1.5.9):** routing + relative guard only (no new feature math). Proxy-F1 **0.6094**, 散户 **R=0.40**.
+Remaining 6/10 retail misses are **feature gaps** (low `score_rt` vs yz/qt), not guard blockers — see
+`--verbose-scores` attribution.
+
+**Critical path:**
+
+| Slice | Status | Gate |
+|---|---|---|
+| **B.0** | ✅ shipped | beat 0.3371 + 散户 R>0 |
+| **B.1** `retail_diffuseness_idx` | optional | score-neutral composite for Phase 4/5 explainability only |
+| **B.2** `trd_size_entropy` | **NEXT** | beat **0.6094** + 散户 R≥0.40 on n=24; size-**value** heterogeneity on `逐笔成交`, not volume HHI |
+| RS-on-逐笔 (Option 2) | out of scope | separate track; fixes dead `rs_*` on parquet snapshot path |
+
+**Gate command (every slice):**
+
+```bash
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
+conda run -n base --no-capture-output python scripts/validate_offline.py \
+  --labels tests/fixtures/validation_labels.csv --input parquet:data/202606 --verbose-scores
+```
+
+**Human (parallel, not Sonnet):** grow 0618/0617 散户 labels (seat-detail grounded) for stronger proxy support;
+Track D for additional parquet days (e.g. 20260617-only procurement if expanding beyond current corpus).
 
 ---
 

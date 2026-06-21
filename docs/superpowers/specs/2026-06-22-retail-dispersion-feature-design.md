@@ -208,8 +208,9 @@ the proxy (or moves it the wrong way) is **flagged suspect, not shipped** (LIS �
 
 ## 7. Files touched (summary)
 
-- `src/rules.py` — B.0 dims + guard; B.1/B.2 wire the new dim into `DIMS_RETAIL`.
-- `src/features.py` — B.1 composite; B.2 entropy feature.
+- `src/rules.py` — B.0 dims + guard; B.2 wires the new dim into `DIMS_RETAIL`. B.1's composite lives in the
+  **scoring path after `normalize.normalize_matrix`** (`label.weak_label_matrix` / `rules`), **not** `features.py`.
+- `src/features.py` — B.2 entropy feature (B.1 does **not** touch `features.py` — see B.1 placement note).
 - `src/ingest_parquet.py` — B.2 surfaces per-print deal sizes into `compute_daily_features`.
 - `config.py` — B.1 weights, B.2 bin/threshold constants (global, documented not-label-fitted).
 - `tests/test_rules.py`, `tests/test_features.py`, `tests/test_ingest_parquet.py` — red-first per slice.
@@ -225,4 +226,3 @@ the proxy (or moves it the wrong way) is **flagged suspect, not shipped** (LIS �
   pins size-value heterogeneity and requires 散户-vs-量化 separation on the diagnostic before the proxy gate.
 - **Snapshot vs tick streams.** B.0/B.1 use snapshot-derived OSS/CB features (already in the matrix); B.2
   reaches into the deal stream. The dead `rs_*` are explicitly *not* relied on by the new retail definition.
-```

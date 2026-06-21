@@ -206,6 +206,42 @@ def test_only_example_rows_prints_skip_and_exits_zero(capsys):
 # V4.5 — local source smoke test (skipif fixture absent)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# B.0 — score_rows returns triple + margin + eligible
+# ---------------------------------------------------------------------------
+
+def test_score_rows_reports_triple_and_margin():
+    import pandas as pd
+    from scripts.validate_offline import score_rows
+
+    # Two clearly-separated rows so ranks are deterministic.
+    matrix = pd.DataFrame(
+        {
+            "oss_small_count_pct": [0.9, 0.1],
+            "oss_mega_count_pct": [0.1, 0.9],
+            "oss_mega_amount_pct": [0.1, 0.9],
+            "ap_unilateral_intensity": [0.1, 0.9],
+            "cb_available": [0.0, 0.0],
+        },
+        index=pd.MultiIndex.from_tuples(
+            [("000010.SZ", "20260617"), ("000725.SZ", "20260617")],
+            names=["stock_code", "transaction_date"],
+        ),
+    )
+    truth = pd.DataFrame({
+        "stock_code": ["000010.SZ", "000725.SZ"],
+        "transaction_date": ["20260617", "20260617"],
+        "capital_type": ["散户", "游资"],
+    })
+    rows = score_rows(matrix, truth)
+    assert len(rows) == 2
+    r0 = next(r for r in rows if r["stock_code"] == "000010.SZ")
+    assert r0["truth"] == "散户"
+    assert len(r0["scores"]) == 3
+    assert "retail_margin" in r0 and "eligible" in r0
+    assert isinstance(r0["eligible"], bool)
+
+
 _LOCAL_TINY = _ROOT / "tests" / "fixtures" / "local_l2_tiny"
 
 

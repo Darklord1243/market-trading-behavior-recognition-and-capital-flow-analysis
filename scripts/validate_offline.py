@@ -130,6 +130,39 @@ def predict_for_keys(
     return weighted_f1(pred_df, filtered_truth)
 
 
+def score_rows(matrix: "pd.DataFrame", truth_df: "pd.DataFrame") -> "list[dict[str, Any]]":
+    """Per-(stock, day) score triple + retail-guard attribution (offline diagnostic).
+
+    Returns one dict per matrix row: stock_code, transaction_date, truth, pred,
+    scores=[游资,量化,散户], retail_margin = score_rt - max(score_yz, score_qt),
+    eligible (margin >= RETAIL_WIN_MARGIN). Runs the SAME normalize -> score path the
+    label stage uses; offline only, never imported by main.py.
+    """
+    from src.normalize import normalize_matrix
+    from src.rules import RETAIL_WIN_MARGIN, score_capital_type
+
+    norm = normalize_matrix(matrix)
+    tmap = {
+        (str(r.stock_code), str(r.transaction_date)): r.capital_type
+        for r in truth_df.itertuples()
+    }
+    rows: list[dict[str, Any]] = []
+    for idx, r in norm.iterrows():
+        code, date = idx if isinstance(idx, tuple) else (idx, "")
+        pred, scores = score_capital_type(r.to_dict())
+        margin = scores[2] - max(scores[0], scores[1])
+        rows.append({
+            "stock_code": str(code),
+            "transaction_date": str(date),
+            "truth": tmap.get((str(code), str(date)), "?"),
+            "pred": pred,
+            "scores": [round(float(s), 3) for s in scores],
+            "retail_margin": round(float(margin), 3),
+            "eligible": bool(margin >= RETAIL_WIN_MARGIN),
+        })
+    return rows
+
+
 def score_from_pred_csv(truth_path: str, pred_csv_path: str, min_confidence: float = 0.0) -> dict[str, Any]:
     """Load truth, filter EXAMPLE rows, load pred CSV, call weighted_f1.
 
@@ -461,6 +494,12 @@ def run(argv: list[str] | None = None) -> int:
             "parquet: input (default: samples/stock-samples.xlsx if present)."
         ),
     )
+    parser.add_argument(
+        "--verbose-scores",
+        action="store_true",
+        dest="verbose_scores",
+        help="Print per-(stock,day) score triple + retail-guard attribution (parquet input; offline).",
+    )
 
     args = parser.parse_args(argv)
 
@@ -516,6 +555,28 @@ def run(argv: list[str] | None = None) -> int:
 
     # --- Print results ---
     _print_result(result, args.labels, args.input, n_dropped)
+
+    if args.verbose_scores and args.input.strip().lower().startswith("parquet"):
+        _src = args.input.strip()
+        root = (_src.split(":", 1)[1].strip() or "data/202606") if ":" in _src else "data/202606"
+        extra = _resolve_norm_universe_codes(norm_universe_path=args.norm_universe)
+        print("  per-row scores [游资,量化,散户] (truth -> pred | margin | eligible):")
+        for date in filtered_truth["transaction_date"].astype(str).unique():
+            labeled = (
+                filtered_truth.loc[filtered_truth["transaction_date"].astype(str) == date, "stock_code"]
+                .astype(str).unique().tolist()
+            )
+            matrix = _build_parquet_matrix(root, date, labeled, extra)
+            if matrix.empty:
+                continue
+            sub = filtered_truth[filtered_truth["transaction_date"].astype(str) == date]
+            for row in score_rows(matrix, sub):
+                if row["truth"] == "?":
+                    continue
+                print(f"    {row['stock_code']:<11}{row['transaction_date']:<10}"
+                      f"{row['truth']}->{row['pred']:<6} {row['scores']} "
+                      f"margin={row['retail_margin']:+.3f} eligible={row['eligible']}")
+
     return 0
 
 
