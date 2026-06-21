@@ -92,6 +92,12 @@ def write_tiny_parquet(root):
         _order_row(1, 3, 2, 93001000, 1000, 150, 1010),   # add buy
         _order_row(1, 3, -1, 93001050, 1000, 150, 1010),  # buy cancel  -> side B
         _order_row(600000, 10, -11, 93000300, 2001, 50, 2000),  # SH sell cancel (from order!)
+        # SecuCode 2 — Track L-c true-latency cases (matched self-join + minute boundary + unmatched)
+        _order_row(2, 100, 2, 93000000, 1000, 100, 1000),   # add  @ 09:30:00.000
+        _order_row(2, 100, -1, 93000500, 1000, 100, 1000),  # cancel @ 09:30:00.500 -> true 500ms
+        _order_row(2, 101, 2, 93059950, 1000, 100, 1000),   # add  @ 09:30:59.950
+        _order_row(2, 101, -1, 93100050, 1000, 100, 1000),  # cancel @ 09:31:00.050 -> true 100ms (raw int diff 40100!)
+        _order_row(2, 999, -11, 93002000, 1000, 100, 1000), # UNMATCHED cancel (no add OrderID 999)
     ])
     # --- deal (逐笔成交): bigorder from Side ∈ {0,1} large prints ---
     _write_parquet(root, "deal", [
@@ -251,3 +257,34 @@ def test_validate_offline_parquet_scheme_scores_keys(tmp_path):
     assert isinstance(result, dict)
     assert "weighted_f1" in result and "n" in result
     assert result["n"] >= 1, f"expected parquet pipeline to score >=1 key, got n={result['n']}"
+
+
+# ---------------------------------------------------------------------------
+# L-c — true order→cancel latency via OrderID self-join (decoded ms)
+# ---------------------------------------------------------------------------
+
+def test_cancel_frame_carries_true_latency_ms(tmp_path):
+    """read_cancel_frame_parquet adds latency_ms = decoded(cancel) - decoded(add) ms,
+    matched on OrderID; unmatched cancels get NaN; minute boundaries are correct."""
+    root = write_tiny_parquet(str(tmp_path))
+    c = ingest_parquet.read_cancel_frame_parquet(root, _DATE, "000002.SZ")
+
+    assert "latency_ms" in c.columns
+    lat = dict(zip(c["cancel_time"], c["latency_ms"]))
+
+    # OrderID 100: 09:30:00.500 − 09:30:00.000 = 500 ms
+    assert lat[93000500] == pytest.approx(500.0)
+    # OrderID 101 crosses the minute: 09:31:00.050 − 09:30:59.950 = 100 ms.
+    # A naïve raw-int subtraction would give 93100050 − 93059950 = 40100 (WRONG).
+    assert lat[93100050] == pytest.approx(100.0)
+    assert lat[93100050] != pytest.approx(40100.0)
+    # OrderID 999 has no matching add → unmatched → NaN
+    assert pd.isna(lat[93002000])
+
+
+# NOTE: Track L-c evaluated a true-latency swap for cb_fast_cancel_ratio but the
+# gate FAILED (real proxy-F1 0.4917 → 0.4381 on the 0618 seed): genuine sub-500ms
+# order→cancel latency is vanishingly rare, so the proxy (inter-cancel burstiness)
+# is kept per the LIS §6 Track L disposition. `latency_ms` above stays available,
+# correct, and tested for a future re-thresholded feature — but is NOT consumed by
+# _cb_features, so there is no proxy→true swap test here by design.

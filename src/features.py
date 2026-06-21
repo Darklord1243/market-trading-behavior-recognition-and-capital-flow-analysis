@@ -192,15 +192,14 @@ def _cb_features(
 
     Fast-cancel proxy note
     ----------------------
-    ``cb_fast_cancel_ratio`` is computed as the share of **consecutive cancel pairs**
-    whose inter-cancel interval (``cancel_time`` integer difference, in HHMMSSmmm
-    units which proxy milliseconds at this resolution) is < CB_FAST_CANCEL_MS.
-    This is an **inter-cancel interval proxy**, NOT true order→cancel latency.
-    True order→cancel latency requires matching each cancel to its originating
-    order via ref columns (叫买序号/叫卖序号/交易所委托号) that
-    ``read_cancel_frame`` does not currently expose.  A future stretch goal (Track
-    L-b extension) can add ref-column support to ``read_cancel_frame`` and compute
-    the true latency from matched pairs.
+    ``cb_fast_cancel_ratio`` is the share of **consecutive cancel pairs** whose
+    inter-cancel interval (``cancel_time`` HHMMSSmmm integer diff, proxying ms at
+    this resolution) is < CB_FAST_CANCEL_MS.  This is an **inter-cancel interval
+    proxy**, NOT true order→cancel latency.  The parquet path
+    (``ingest_parquet.read_cancel_frame_parquet``) also emits per-cancel
+    ``latency_ms`` (OrderID self-join, decoded ms), but swapping it in here
+  regressed the real proxy-F1 on the 0618 seed — see the inline Track L-c note in
+    ``_cb_features`` — so the proxy is kept per LIS §6 Track L disposition.
     """
     if not has_cancel_table:
         out = {k: 0.0 for k in CB_KEYS}
@@ -242,6 +241,15 @@ def _cb_features(
     # cancel_time difference < CB_FAST_CANCEL_MS.
     # cancel_time is a HHMMSSmmm integer; consecutive differences proxy ms intervals
     # at the sub-second resolution used in A-share tick data.
+    #
+    # Track L-c note: the parquet cancel frame also carries a *true* per-cancel
+    # ``latency_ms`` (OrderID self-join, decoded ms — see ingest_parquet), but
+    # swapping it in here REGRESSED the real proxy-F1 (0.4917 → 0.4381 on the
+    # 0618 seed) because true sub-CB_FAST_CANCEL_MS latency is vanishingly rare,
+    # while the inter-cancel-burstiness proxy carries more class signal. So the
+    # proxy is kept per the Track L gate disposition; ``latency_ms`` stays
+    # available for a future re-thresholded fast-cancel / latency-distribution
+    # feature (revisit with more labels/days).
     time_col = "cancel_time" if "cancel_time" in cancel_df.columns else (
         "time_int" if "time_int" in cancel_df.columns else None
     )

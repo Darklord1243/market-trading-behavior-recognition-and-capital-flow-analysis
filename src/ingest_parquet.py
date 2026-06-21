@@ -127,16 +127,32 @@ def _read_stream(
 # Cancel frame (from the unified `order` table — both exchanges, no branching)
 # ---------------------------------------------------------------------------
 
-_CANCEL_EMPTY_COLS = ["side", "cancel_time", "cancel_qty", "time_int"]
+_CANCEL_EMPTY_COLS = ["side", "cancel_time", "cancel_qty", "time_int", "latency_ms"]
+
+
+def _hhmmssmmm_to_ms(t: int) -> int:
+    """Decode an ``HHMMSSmmm`` integer to milliseconds-since-midnight.
+
+    Minute/second boundaries are handled correctly — unlike a raw integer
+    subtraction of two ``HHMMSSmmm`` values (which over-counts across them).
+    """
+    t = int(t)
+    hh = t // 10_000_000
+    mm = (t // 100_000) % 100
+    ss = (t // 1_000) % 100
+    ms = t % 1_000
+    return ((hh * 60 + mm) * 60 + ss) * 1_000 + ms
 
 
 def read_cancel_frame_parquet(root: str, date: str, stock_code: str) -> pd.DataFrame:
     """Reconstruct the cancel frame for one stock from ``order.OrderType ∈ {-1,-11}``.
 
-    Emits the **same contract** as ``ingest_local.read_cancel_frame``:
-    columns ``side`` (``B``/``S``), ``cancel_time`` (HHMMSSmmm int), ``cancel_qty``,
-    and a ``time_int`` alias — so ``features._cb_features`` consumes it unchanged.
-    Empty frame (zero rows) if no cancels.
+    Emits the ``ingest_local.read_cancel_frame`` contract (``side`` ``B``/``S``,
+    ``cancel_time`` HHMMSSmmm int, ``cancel_qty``, ``time_int`` alias) **plus a
+    real ``latency_ms``** (Track L-c): each cancel is matched to its originating
+    add row by ``OrderID`` (100% linkage in the 委托补全 table), and
+    ``latency_ms = decoded_ms(cancel) − decoded_ms(add)``.  Unmatched cancels get
+    ``NaN`` ``latency_ms`` (excluded downstream).  Empty frame if no cancels.
     """
     secu = stock_code_to_secu(stock_code)
     df = _read_stream(root, date, "order", [secu],
@@ -145,14 +161,30 @@ def read_cancel_frame_parquet(root: str, date: str, stock_code: str) -> pd.DataF
         return pd.DataFrame(columns=_CANCEL_EMPTY_COLS)
 
     otype = pd.to_numeric(df["OrderType"], errors="coerce")
+    order_time = pd.to_numeric(df["OrderTime"], errors="coerce").fillna(0).astype("int64")
+
+    # Add-side decoded-ms per OrderID (non-cancel rows) — the self-join key.
+    add_mask = ~otype.isin(_CANCEL_TYPES)
+    add_ms_by_id: dict = {}
+    if add_mask.any():
+        adds = pd.DataFrame({"OrderID": df.loc[add_mask, "OrderID"].to_numpy(),
+                             "_ms": order_time[add_mask].map(_hhmmssmmm_to_ms).to_numpy()})
+        add_ms_by_id = adds.groupby("OrderID")["_ms"].min().to_dict()
+
     c = df[otype.isin(_CANCEL_TYPES)].copy()
     if c.empty:
         return pd.DataFrame(columns=_CANCEL_EMPTY_COLS)
 
     c["side"] = pd.to_numeric(c["OrderType"], errors="coerce").map(_CANCEL_SIDE).fillna("U")
     c["cancel_qty"] = pd.to_numeric(c["Volume"], errors="coerce").fillna(0.0)
-    c["cancel_time"] = pd.to_numeric(c["OrderTime"], errors="coerce").fillna(0).astype("int64")
+    c["cancel_time"] = order_time[otype.isin(_CANCEL_TYPES)].to_numpy()
     c["time_int"] = c["cancel_time"]
+
+    cancel_ms = c["cancel_time"].map(_hhmmssmmm_to_ms)
+    add_ms = c["OrderID"].map(add_ms_by_id)            # NaN where unmatched
+    latency = cancel_ms - add_ms
+    c["latency_ms"] = latency.where(latency >= 0)      # drop matched-but-negative as unmatched
+
     return c[_CANCEL_EMPTY_COLS].reset_index(drop=True)
 
 
