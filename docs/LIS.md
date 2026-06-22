@@ -7,13 +7,29 @@
 
 | | |
 |---|---|
-| **Version** | **v1.5.9** (2026-06-22) |
+| **Version** | **v1.6.0** (2026-06-22) |
 | **Pipeline entry** | `python main.py --input <xlsx|glob> -o outputs/ [--date YYYYMMDD]` |
-| **Tests** | `pytest tests/` → **119 passing** (verified 2026-06-22; … → 114 Track L-c infra → **119 Feature B B.0**) |
+| **Tests** | `pytest tests/` → **130 passing** (verified 2026-06-22; … → 119 Feature B B.0 → **130 Feature B B.2**) |
 | **Branch at authoring** | `feat/task2-3class-capital-type` |
 | **Canonical source of truth** | brief `docs/AFAC2026_Track1_Project_Brief.docx` (Rev. 7) + `docs/competition-spec/` |
 
 ### Changelog
+- **v1.6.0 (2026-06-22)** — **Feature B slice B.2 landed** (commit `94ccb90`): `trd_size_entropy` — deal-stream
+  print-size heterogeneity as the **4th 散户 diffuseness dim**. New `ingest_parquet.read_deal_sizes_parquet`
+  builds a `deal_lookup {(code,date): [print volumes]}` (genuine prints only, `Side ∈ {0,1}`, `Volume > 0`),
+  threaded through `aggregate.build_feature_matrix(deal_lookup=)` → `compute_daily_features(deal_volumes=)`
+  mirroring the `cancel_lookup` seam; `validate_offline._build_parquet_matrix` builds + threads it on the gated
+  path (xlsx/snapshot path passes `None` → `0.0`, backward-safe). `features._trd_size_entropy` = normalized
+  Shannon entropy over log-spaced `TRD_SIZE_BINS` (powers-of-2 ×100 lot ladder), **denominator `ln(total bins)`
+  FIXED** (not non-empty) so a 2-clip 量化 distribution stays LOW. `DIMS_RETAIL` gains
+  `("trd_size_entropy", True, False)`; B.0's 3 exact-margin rules tests re-derived (entropy pinned to old 3-dim
+  `score_rt` to preserve the mean). 11 new tests; suite **119 → 130 green**. **Gate** (`parquet:data/202606`,
+  n=24): **weighted_f1 0.6094 → 0.6599** | 游资 0.57/0.67/0.62 (sup 6) | 量化 0.64/0.88/0.74 (sup 8) |
+  **散户 0.83/0.50/0.62 (sup 10; recall 4/10 → 5/10)**. Per-class mean `trd_size_entropy`: **散户 0.777 /
+  游资 0.800 / 量化 0.598** — `散户 > 量化` ⇒ entropy stays **primary** (no `1 - modal_size_share` fallback).
+  Minor: 游资 mean (0.800) edges 散户 (0.777) — small spurious 散户 push on high-entropy 游资 rows, but 游资 R
+  held and net F1 rose, so additive. **This 0.6599 is the new gate.** B.1 (`retail_diffuseness_idx` composite)
+  remains optional/off critical path. Spec: `docs/superpowers/specs/2026-06-22-retail-dispersion-feature-design.md` §B.2.
 - **v1.5.9 (2026-06-22)** — **Feature B slice B.0 landed** (`rules.py` retail routing + relative guard). Rewired
   `DIMS_RETAIL` from inverse/dead dims (`oss_small_amount_pct`, `ap_unilateral_intensity`, dead `rs_*`) to
   diagnostic-confirmed **positive** retail priors: high `oss_small_count_pct`, low `oss_mega_count_pct`, low
@@ -258,7 +274,7 @@ with near-random Task-2 output on real features.**
 | `src/features.py` | 🟡 **32 of 89 features**; RS family **dtype-portable (Phase 2, `f932504`)** | See gap table below. `_rs_features` now uses `.diff().dt.total_seconds()*1000` (dtype-safe across `[ms]`/`[ns]`); `rs_burst_ratio` = share `< RS_BURST_THRESHOLD_MS` (100ms, absolute); `+rs_split_similarity`. Fixture cv 13.48→1.34, burst 0.99→0. **§7-R1 resolved.** Scope: RS only (PI uses `hour`/`minute`, untouched). |
 | `src/aggregate.py` | ✅ real (thin) | groups → daily matrix. `compute_window_features` is an unused seam. |
 | `src/normalize.py` | ✅ real (**Phase 1**), **wired (Phase 1b)** | H1 seam: cross-sample within-day rank→[0,1] (`(r-1)/(n-1)`; excludes `cb_available`/`n_ticks`; n≤1 / constant→0.5). Now **called by `label.weak_label_matrix`** before capital scoring (commit `18cca42`). |
-| `src/rules.py` | ✅ **B.0 landed** | 3-class scorer + **relative** retail win margin (`RETAIL_WIN_MARGIN=0.05`). `DIMS_RETAIL` = positive diffuseness priors (`oss_small_count_pct` HIGH, `oss_mega_count_pct` LOW, `cb_fast_cancel_ratio` LOW, CB-gated). 游资/量化 dim sets unchanged. Scoring runs on rank-normalized rows via `label.weak_label_matrix` (Phase 1b). |
+| `src/rules.py` | ✅ **B.2 landed** | 3-class scorer + **relative** retail win margin (`RETAIL_WIN_MARGIN=0.05`). `DIMS_RETAIL` = positive diffuseness priors (`oss_small_count_pct` HIGH, `oss_mega_count_pct` LOW, `cb_fast_cancel_ratio` LOW [CB-gated], **`trd_size_entropy` HIGH [B.2 deal-stream size heterogeneity]**). 游资/量化 dim sets unchanged. Scoring runs on rank-normalized rows via `label.weak_label_matrix` (Phase 1b). |
 | `src/label.py` | ✅ real (thin), **normalize-wired (Phase 1b)** | weak labels + confidence (top1−top2 margin; intent gate clearance). Scores capital on `normalize_matrix(matrix)` rows; intent gate (`get_intention`/`_intent_confidence`) reads **raw** rows (absolute thresholds). Red-first panel test in `tests/test_label.py`. |
 | `src/model.py` | ⛔ **STUB** (pass-through) | `CapitalTypeHead.fit/predict` return weak labels unchanged. Seam ready for LightGBM. |
 | `src/cluster.py` | ⛔ **STUB-grade** | `DEFAULT_K=8` clamped, `min(k,n)`; 4 hard-coded pattern predicates; degrades to K=1 on fixture. No K-sweep, Euclidean only. |
@@ -422,7 +438,8 @@ backtest answers (§3.3 auto-DQ). Validation labels are **post-market public inf
 |---|---|---|---|---|
 | 0618 only (pre–Fix A panel) | 10 | 0.4917 | 0/3 | superseded for gating |
 | Combined 0617+0618 (pre–B.0) | 24 | 0.3371 | 0/10 | v1.5.8 gate |
-| Combined 0617+0618 (**post–B.0**) | 24 | **0.6094** | **4/10** | **active gate for B.2** |
+| Combined 0617+0618 (post–B.0) | 24 | 0.6094 | 4/10 | superseded by B.2 |
+| Combined 0617+0618 (**post–B.2**) | 24 | **0.6599** | **5/10** | **active gate** (`trd_size_entropy`; 散户 P=0.83) |
 
 **How it feeds H1–H5 acceptance (additive, not a replacement):**
 - Phase 1b, Phase 2, each Phase 3 batch: the PR records the **proxy-F1 before/after** on the seed set *in addition
