@@ -3,7 +3,7 @@
 Reusable prompts for **implementation agents** (Sonnet-class). Strategy and LIS maintenance stay with the
 high-reasoning lead (Opus); executors read **one prompt file + `docs/LIS.md` §6** for the target phase or track.
 
-**LIS version:** v1.6.0 (2026-06-22). Batch 1–2 done. Batch 3: V.4/V.3/P.1/B.2 ✅ — **L-c re-eval NEXT** (gate 0.6599).
+**LIS version:** v1.6.1 (2026-06-22). Batch 3 closed. Batch 4: human label addendum ‖ B.3a diagnostic → **wait CSV** → V.3 verify → B.3b.
 
 > **New here? Read [`WORKFLOW.md`](WORKFLOW.md) first** — operating model (Opus → Sonnet → verify), batch status, dispatch order.
 
@@ -13,7 +13,8 @@ high-reasoning lead (Opus); executors read **one prompt file + `docs/LIS.md` §6
 |-------|--------|-------|
 | **1** (parallel: Track L-a, Phase 1, Track V V.1–V.2) | ✅ DONE | 79 passed |
 | **2** (sequential: Phase 1b → L-b → Phase 2) | ✅ DONE | 101 passed |
-| **3** (V.4 ‖ V.3 → P.1 → B.2 → **L-c re-eval**) | 🔜 L-c next | 130 passed |
+| **3** (V.4 ‖ V.3 → P.1 → B.0/B.2 → **L-c re-eval**) | ✅ DONE (L-c swap **rejected**, infra kept) | 131 passed |
+| **4** (label addendum ‖ B.3a → **wait CSV** → V.3.2 verify → B.3b) | 🔜 in progress | 131 passed |
 
 ## Files
 
@@ -30,14 +31,16 @@ high-reasoning lead (Opus); executors read **one prompt file + `docs/LIS.md` §6
 | [`sonnet-phase-1b-wire-normalize.md`](sonnet-phase-1b-wire-normalize.md) | Phase 1b — wire normalize into `label.py` |
 | [`sonnet-track-l-b-cb-features.md`](sonnet-track-l-b-cb-features.md) | Track L-b — real CB feature math |
 | [`sonnet-phase-2-rs-fix.md`](sonnet-phase-2-rs-fix.md) | Phase 2 — RS dtype fix |
-| **Batch 3 (V.4/V.3/P.1/B.2 done; L-c next)** | |
+| **Batch 3 (V.4/V.3/P.1/B.0/B.2 done; L-c re-eval rejected)** | |
 | [`opus-lead-orchestrator-batch-3.md`](opus-lead-orchestrator-batch-3.md) | Opus lead — batch 3 operating model (V.4→V.3→L-c) |
-| [`opus-lead-orchestrator-batch-3-continued.md`](opus-lead-orchestrator-batch-3-continued.md) | **Opus lead — START HERE** post–B.2 (gate 0.6599, L-c re-eval only) |
+| [`opus-lead-orchestrator-batch-3-continued.md`](opus-lead-orchestrator-batch-3-continued.md) | Opus lead — post–B.2 continuation (gate 0.6599, L-c re-eval) |
 | [`sonnet-track-v-v4-offline-harness.md`](sonnet-track-v-v4-offline-harness.md) | Track V V.4 — offline proxy-F1 harness ✅ |
 | [`track-v-v3-acceptance-spec.md`](track-v-v3-acceptance-spec.md) | Track V V.3 — human label acceptance spec ✅ |
 | [`sonnet-feature-b-b2-size-entropy.md`](sonnet-feature-b-b2-size-entropy.md) | Feature B B.2 — `trd_size_entropy` (shipped `94ccb90`) |
 | [`sonnet-track-l-c-cb-true-latency.md`](sonnet-track-l-c-cb-true-latency.md) | Track L-c — base prompt (true order→cancel latency) |
-| [`sonnet-track-l-c-cb-true-latency-addendum.md`](sonnet-track-l-c-cb-true-latency-addendum.md) | **L-c mandatory addendum** — gate 0.6599, parquet eval history |
+| [`sonnet-track-l-c-cb-true-latency-addendum.md`](sonnet-track-l-c-cb-true-latency-addendum.md) | L-c mandatory addendum — gate 0.6599; **swap rejected `51787d0`** |
+| **Batch 4 (label addendum ‖ B.3a → V.3.2 verify → B.3b)** | |
+| [`opus-lead-orchestrator-batch-4.md`](opus-lead-orchestrator-batch-4.md) | **Opus lead — START HERE** (label addendum, V.3.2 verify, Feature B.3) |
 
 ## Workflow (one line)
 
@@ -55,6 +58,6 @@ Opus orchestrator dispatches Sonnet (one track) → Sonnet implements (TDD, **no
 
 Paste into a fresh **Opus** chat:
 
-> Open `docs/prompts/opus-lead-orchestrator-batch-3-continued.md` + base batch-3 orchestrator. B.2 shipped (130 tests, gate 0.6599). Wait for proceed, then dispatch L-c re-eval.
+> Open `docs/prompts/opus-lead-orchestrator-batch-4.md`. Batch 3 closed (131 tests, gate 0.6599; L-c swap rejected). Run H + B.3a in parallel while I append labels; wait for "CSV ready" → V.3.2 verify → dispatch B.3b against the new active baseline.
 
 Or paste only the orchestrator file path — it is self-contained.
