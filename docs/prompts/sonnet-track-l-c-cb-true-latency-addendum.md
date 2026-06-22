@@ -127,3 +127,13 @@ If true-latency swap cannot beat **0.6599** after a minimal, correct implementat
 2. Recommend keeping the proxy (LIS disposition).
 3. Optionally propose **one** follow-up (e.g. latency-distribution dim, re-threshold study on unlabeled data only)
    — do **not** implement without a new prompt.
+
+---
+
+## Outcome (2026-06-22) — FAIL, not shipped
+
+Re-eval ran. Gate `parquet:data/202606` n=24: **weighted_f1 0.6599 → 0.6500**, 散户 R **5/10 → 4/10**. Only
+**0.64%** of 1,018,500 cancels are sub-`CB_FAST_CANCEL_MS` true latency (vs 86.8% proxy-fast) → feature collapses.
+Swap **rejected**; `_cb_features` keeps the inter-cancel proxy. Infra retained (`ingest_local` `latency_ms` parity +
+xfail minute-boundary tests). See LIS **v1.6.1** §6 Track L-c. Follow-up (re-threshold / latency-distribution) needs
+a new prompt — not dispatched.

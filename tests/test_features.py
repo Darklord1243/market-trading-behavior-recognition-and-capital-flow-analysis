@@ -568,3 +568,158 @@ def test_rs_split_similarity_present(dtype):
         f"dtype={dtype}: rs_split_similarity={f['rs_split_similarity']} — expected 1.0 "
         "for uniform 30s cadence (cv=0)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Track L-c — true order→cancel latency (TDD: Lc.1 written BEFORE implementation)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Track L-c re-eval gate FAILED (0.6500 < 0.6599 on n=24 parquet): "
+        "true sub-500ms latency = 0.64% of cancels (vanishingly rare); "
+        "inter-cancel proxy reverted per LIS §6 Track L gate disposition. "
+        "Un-xfail when _cb_features is re-enabled to consume latency_ms."
+    ),
+)
+def test_fast_cancel_uses_true_latency_not_inter_cancel():
+    """Lc.1 — discriminating test: true latency disagrees with inter-cancel proxy
+    at a minute boundary.
+
+    Setup (hand-computed):
+      Cancel A: order @ 92959800 (09:29:59.800), cancel @ 93000050 (09:30:00.050)
+        true latency = decode(93000050) − decode(92959800)
+                     = (9*3600000 + 30*60000 +  0*1000 + 50)
+                     − (9*3600000 + 29*60000 + 59*1000 + 800)
+                     = 34200050 − 34199800 = 250 ms  → FAST (< 500 ms)
+        raw-int diff = 93000050 − 92959800 = 40250   → SLOW under proxy
+
+      Cancel B: order @ 93000000, cancel @ 93002000
+        true latency = decode(93002000) − decode(93000000)
+                     = (9*3600000 + 30*60000 +  2*1000 +   0)
+                     − (9*3600000 + 30*60000 +  0*1000 +   0)
+                     = 34202000 − 34200000 = 2000 ms  → SLOW (≥ 500 ms)
+
+    True-latency result: 1 fast of 2 matched → cb_fast_cancel_ratio = 0.5
+    Proxy result: inter-cancel interval = 93002000 − 93000050 = 1950 → SLOW
+                  → 0 fast intervals of 1 → cb_fast_cancel_ratio = 0.0
+
+    Therefore: if _cb_features uses true latency from latency_ms column,
+    result == 0.5.  If it uses the inter-cancel proxy, result == 0.0.
+    This test FAILS under the proxy (current) code and PASSES after Lc.3.
+
+    GATE RESULT: proxy-F1 went 0.6599 → 0.6500 with true latency. REVERTED.
+    """
+    # Construct cancel frame with true latency_ms column (two matched cancels)
+    cancel_df = pd.DataFrame({
+        "side":        ["B", "S"],
+        "cancel_time": [93000050, 93002000],   # HHMMSSmmm integers
+        "cancel_qty":  [100.0, 200.0],
+        "time_int":    [93000050, 93002000],
+        # Pre-computed true latency_ms (what read_cancel_frame / parquet path provides)
+        "latency_ms":  [250.0, 2000.0],
+    })
+    group = _synthetic_tick_group_10()
+    result = _cb_features(group, has_cancel_table=True, cancel_df=cancel_df)
+
+    # True-latency: 1 fast (250ms) of 2 matched → 0.5
+    # Proxy (inter-cancel interval): only 1 interval (93002000-93000050=1950ms), 0 fast → 0.0
+    assert result["cb_fast_cancel_ratio"] == pytest.approx(0.5, rel=1e-6), (
+        f"Expected 0.5 (true latency: 1 fast of 2), got {result['cb_fast_cancel_ratio']}. "
+        "If 0.0: proxy is still used (inter-cancel interval ignores latency_ms column). "
+        "This test discriminates at the minute boundary (raw int diff 40250 ≠ true 250ms)."
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Track L-c re-eval gate FAILED (0.6500 < 0.6599 on n=24 parquet): "
+        "true latency reverted to inter-cancel proxy. "
+        "Un-xfail when _cb_features is re-enabled to consume latency_ms."
+    ),
+)
+def test_unmatched_cancels_excluded_from_fast_cancel():
+    """Lc.4 — unmatched cancels (NaN latency_ms) excluded from numerator AND denominator.
+
+    Setup:
+      3 cancels:
+        A: latency_ms = 200  (fast, matched)
+        B: latency_ms = NaN  (unmatched — dropped)
+        C: latency_ms = 800  (slow, matched)
+
+    Expected: 1 fast of 2 matched → cb_fast_cancel_ratio = 0.5
+    Wrong: counting B as slow → 1/3 ≈ 0.333
+    Wrong: counting B as fast → 2/3 ≈ 0.667
+    """
+    cancel_df = pd.DataFrame({
+        "side":        ["B", "S", "B"],
+        "cancel_time": [93000200, 93000400, 93000800],
+        "cancel_qty":  [100.0, 150.0, 200.0],
+        "time_int":    [93000200, 93000400, 93000800],
+        "latency_ms":  [200.0, float("nan"), 800.0],   # B is unmatched
+    })
+    group = _synthetic_tick_group_10()
+    result = _cb_features(group, has_cancel_table=True, cancel_df=cancel_df)
+
+    assert result["cb_fast_cancel_ratio"] == pytest.approx(0.5, rel=1e-6), (
+        f"Expected 0.5 (1 fast of 2 matched); got {result['cb_fast_cancel_ratio']}. "
+        "Unmatched (NaN latency_ms) must be excluded from both numerator and denominator."
+    )
+
+
+def test_cb_features_fixture_latency_ms_join():
+    """Lc.5 — fixture-level: read_cancel_frame on 000001.SZ returns latency_ms
+    for matched cancels; the SZ sell-cancel is ≈61 s (NOT fast).
+
+    Fixture repair (documented):
+      逐笔委托.csv: added order_no=8 (add, buy, time=145400000 = 14:54:00.000)
+      逐笔成交.csv: changed buy cancel (trade_no=6) 叫买序号 from 0 to 8
+
+    Matched cancels and their true latencies:
+      Sell cancel (time=93002000):  order_no=2 (time=92901000)
+        latency = decode(93002000) − decode(92901000) = 34202000 − 34141000 = 61000 ms (slow)
+      Buy cancel (time=145500000):  order_no=8 (time=145400000)
+        latency = decode(145500000) − decode(145400000) = 53700000 − 53640000 = 60000 ms (slow)
+
+    Both matched; neither is fast (< 500 ms) → cb_fast_cancel_ratio = 0.0
+    (2 matched, 0 fast → 0/2 = 0.0)
+    """
+    from src.ingest_local import read_cancel_frame
+
+    FIXTURE_ROOT = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "tests", "fixtures", "local_l2_tiny",
+    )
+    DATE = "20260611"
+    SZ_CODE = "000001.SZ"
+    stock_dir = os.path.join(FIXTURE_ROOT, DATE, DATE, SZ_CODE)
+
+    cancel_df = read_cancel_frame(stock_dir, SZ_CODE)
+
+    # latency_ms must be present
+    assert "latency_ms" in cancel_df.columns, "read_cancel_frame must produce latency_ms"
+
+    # At least 2 cancels in the fixture (sell cancel + buy cancel)
+    assert len(cancel_df) >= 2
+
+    # Check matched latencies are finite and correct
+    matched = cancel_df[cancel_df["latency_ms"].notna()]
+    assert len(matched) >= 2, (
+        f"Expected ≥2 matched cancels, got {len(matched)}. "
+        "Both sell (order_no=2, latency=61000ms) and buy (order_no=8, latency=60000ms) should match."
+    )
+
+    # All matched latencies should be >> 500 ms (no fast cancels in fixture)
+    assert (matched["latency_ms"] >= 500).all(), (
+        f"Fixture latencies should all be slow (≥500ms): {matched['latency_ms'].tolist()}"
+    )
+
+    # Verify via _cb_features: 2 matched, 0 fast → cb_fast_cancel_ratio = 0.0
+    group = _synthetic_tick_group_10()
+    result = _cb_features(group, has_cancel_table=True, cancel_df=cancel_df)
+    assert result["cb_fast_cancel_ratio"] == pytest.approx(0.0, abs=1e-9), (
+        f"Expected 0.0 (no fast cancels in fixture), got {result['cb_fast_cancel_ratio']}"
+    )
+    assert result["cb_available"] == 1.0

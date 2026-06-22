@@ -282,12 +282,15 @@ def test_cancel_frame_carries_true_latency_ms(tmp_path):
     assert pd.isna(lat[93002000])
 
 
-# NOTE: Track L-c evaluated a true-latency swap for cb_fast_cancel_ratio but the
-# gate FAILED (real proxy-F1 0.4917 → 0.4381 on the 0618 seed): genuine sub-500ms
-# order→cancel latency is vanishingly rare, so the proxy (inter-cancel burstiness)
-# is kept per the LIS §6 Track L disposition. `latency_ms` above stays available,
-# correct, and tested for a future re-thresholded feature — but is NOT consumed by
-# _cb_features, so there is no proxy→true swap test here by design.
+# NOTE: Track L-c true-latency swap was EVALUATED and REJECTED — twice.
+# Prior eval (n=10 / 0618-seed): proxy-F1 0.4917 → 0.4381. Re-eval (n=24 /
+# parquet:data/202606, post-B.2): weighted_f1 0.6599 → 0.6500, 散户 R 5/10 → 4/10.
+# Mechanism: genuine sub-CB_FAST_CANCEL_MS latency is vanishingly rare (0.64% of
+# cancels) while the inter-cancel-burstiness proxy (~86.8% fast) carries stronger
+# class signal. Disposition: _cb_features keeps the inter-cancel proxy; the true
+# per-cancel `latency_ms` (asserted above, and the ingest_local parity) is RETAINED
+# as dormant infra for a future re-thresholded / latency-distribution feature, but
+# is NOT consumed by _cb_features. See docs/LIS.md §6 Track L-c re-eval note.
 
 
 # ---------------------------------------------------------------------------

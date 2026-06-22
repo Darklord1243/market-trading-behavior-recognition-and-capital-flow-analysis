@@ -123,6 +123,27 @@ BIG_ORDER_THRESHOLD: int = OSS_THRESHOLDS["large"]  # ≥ 10 000 shares
 
 
 # ---------------------------------------------------------------------------
+# HHMMSSmmm decode helper (Track L-c)
+# ---------------------------------------------------------------------------
+
+def _hhmmssmmm_to_ms(t: int) -> int:
+    """Decode an ``HHMMSSmmm`` integer to milliseconds-since-midnight.
+
+    Minute/second boundaries are handled correctly — unlike a raw integer
+    subtraction of two ``HHMMSSmmm`` values (which over-counts across them).
+    e.g. 93000050 → 9*3600000 + 30*60000 + 0*1000 + 50 = 34200050 ms
+         92959800 → 9*3600000 + 29*60000 + 59*1000 + 800 = 34199800 ms
+    True elapsed 250 ms; raw int diff 40250 (minute-boundary distortion).
+    """
+    t = int(t)
+    hh = t // 10_000_000
+    mm = (t // 100_000) % 100
+    ss = (t // 1_000) % 100
+    ms = t % 1_000
+    return ((hh * 60 + mm) * 60 + ss) * 1_000 + ms
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -251,19 +272,49 @@ def read_cancel_frame(stock_dir: str, stock_code: str) -> pd.DataFrame:
     """Reconstruct a normalized cancel frame from the per-exchange embedded signals.
 
     - **SZ** (``.SZ``): cancels are rows in ``逐笔成交.csv`` where ``成交代码 == 'C'``.
-    - **SH** (``.SH``): cancels are rows in ``逐笔委托.csv`` where ``委托类型 == 'D'``.
+      Each cancel is matched to its originating add order in ``逐笔委托.csv`` via
+      the side-appropriate ref: ``ask_seq`` (叫卖序号) for sell cancels, ``bid_seq``
+      (叫买序号) for buy cancels.  The matched ``order_no`` (委托编号) in
+      ``逐笔委托.csv`` gives the placement time; ``latency_ms = decode(cancel_time) -
+      decode(order_time)`` (decoded to real ms to handle minute boundaries correctly).
 
-    Returns a DataFrame with at least columns: ``side``, ``time_int``, ``cancel_qty``.
-    Returns an **empty** DataFrame (zero rows) if no cancels are found.
+    - **SH** (``.SH``): cancels are rows in ``逐笔委托.csv`` where ``委托类型 == 'D'``.
+      Matched to add rows (``委托类型 == 'A'``) sharing the same ``exchange_order_no``
+      (交易所委托号).
+
+    Returns a DataFrame with columns: ``side``, ``cancel_time``, ``cancel_qty``,
+    ``time_int``, ``latency_ms``.  ``latency_ms`` is NaN for unmatched cancels
+    (ref ``0``, no partner, or negative computed latency).  Returns an **empty**
+    DataFrame (zero rows) if no cancels are found.
     """
     exchange = stock_code.split(".")[-1].upper() if "." in stock_code else "UNKNOWN"
 
     cancels_list = []
 
     if exchange == "SZ":
-        path = os.path.join(stock_dir, "逐笔成交.csv")
-        if os.path.exists(path):
-            df = pd.read_csv(path, encoding="gb18030", dtype=str)
+        trade_path = os.path.join(stock_dir, "逐笔成交.csv")
+        order_path = os.path.join(stock_dir, "逐笔委托.csv")
+
+        # Build order_no → decoded_ms lookup from the order file
+        order_ms_by_no: dict[int, int] = {}
+        if os.path.exists(order_path):
+            ord_df = pd.read_csv(order_path, encoding="gb18030", dtype=str)
+            ord_df = ord_df.rename(columns={k: v for k, v in ORDER_COL_MAP.items() if k in ord_df.columns})
+            # Only add orders (order_type == 'A') contribute placement times
+            if "order_type" in ord_df.columns:
+                add_mask = ord_df["order_type"].astype(str).str.strip() == "A"
+                adds = ord_df[add_mask].copy()
+            else:
+                adds = ord_df.copy()
+            if "order_no" in adds.columns and "time_int" in adds.columns:
+                no_col = pd.to_numeric(adds["order_no"], errors="coerce").fillna(-1).astype(int)
+                t_col = pd.to_numeric(adds["time_int"], errors="coerce").fillna(0).astype(int)
+                for no, t in zip(no_col, t_col):
+                    if no > 0 and no not in order_ms_by_no:
+                        order_ms_by_no[no] = _hhmmssmmm_to_ms(t)
+
+        if os.path.exists(trade_path):
+            df = pd.read_csv(trade_path, encoding="gb18030", dtype=str)
             df = df.rename(columns={k: v for k, v in TRADE_COL_MAP.items() if k in df.columns})
             if "trade_code" in df.columns:
                 mask = df["trade_code"].astype(str).str.strip() == "C"
@@ -280,17 +331,54 @@ def read_cancel_frame(stock_dir: str, stock_code: str) -> pd.DataFrame:
                     c["cancel_time"] = pd.to_numeric(
                         c.get("time_int", pd.Series(dtype="float64")), errors="coerce"
                     ).fillna(0).astype(int)
-                    cancels_list.append(c[["side", "cancel_time", "cancel_qty"]])
+
+                    # Compute true latency_ms via ref-column join (Track L-c)
+                    # Sell cancel: order ref is ask_seq; buy cancel: order ref is bid_seq.
+                    # Ref == 0 means no matching order → unmatched (NaN latency).
+                    ask_seq = pd.to_numeric(c.get("ask_seq", pd.Series(dtype="float64")), errors="coerce").fillna(0).astype(int)
+                    bid_seq = pd.to_numeric(c.get("bid_seq", pd.Series(dtype="float64")), errors="coerce").fillna(0).astype(int)
+                    side_upper = c["side"].astype(str).str.strip().str.upper()
+
+                    latency_list = []
+                    cancel_ms_list = c["cancel_time"].map(_hhmmssmmm_to_ms).tolist()
+                    for idx_i, (s, ask, bid, c_ms) in enumerate(
+                        zip(side_upper, ask_seq, bid_seq, cancel_ms_list)
+                    ):
+                        if s.startswith("S"):
+                            ref = int(ask)
+                        else:
+                            ref = int(bid)
+                        if ref == 0 or ref not in order_ms_by_no:
+                            latency_list.append(float("nan"))
+                        else:
+                            lat = c_ms - order_ms_by_no[ref]
+                            latency_list.append(float(lat) if lat >= 0 else float("nan"))
+
+                    c["latency_ms"] = latency_list
+                    cancels_list.append(c[["side", "cancel_time", "cancel_qty", "latency_ms"]])
 
     elif exchange == "SH":
-        path = os.path.join(stock_dir, "逐笔委托.csv")
-        if os.path.exists(path):
-            df = pd.read_csv(path, encoding="gb18030", dtype=str)
+        order_path = os.path.join(stock_dir, "逐笔委托.csv")
+        if os.path.exists(order_path):
+            df = pd.read_csv(order_path, encoding="gb18030", dtype=str)
             df = df.rename(columns={k: v for k, v in ORDER_COL_MAP.items() if k in df.columns})
             if "order_type" in df.columns:
-                mask = df["order_type"].astype(str).str.strip() == "D"
-                if mask.any():
-                    c = df[mask].copy()
+                otype = df["order_type"].astype(str).str.strip()
+
+                # Build exchange_order_no → decoded_ms for add orders ('A')
+                add_ms_by_eno: dict[str, int] = {}
+                if "exchange_order_no" in df.columns and "time_int" in df.columns:
+                    add_mask = otype == "A"
+                    adds = df[add_mask]
+                    for eno, t in zip(adds["exchange_order_no"].astype(str), adds["time_int"]):
+                        t_ms = _hhmmssmmm_to_ms(pd.to_numeric(t, errors="coerce") or 0)
+                        eno = eno.strip()
+                        if eno and eno not in add_ms_by_eno:
+                            add_ms_by_eno[eno] = t_ms
+
+                cancel_mask = otype == "D"
+                if cancel_mask.any():
+                    c = df[cancel_mask].copy()
                     c["cancel_qty"] = pd.to_numeric(
                         c.get("order_qty", pd.Series(dtype="float64")), errors="coerce"
                     ).fillna(0)
@@ -299,7 +387,22 @@ def read_cancel_frame(stock_dir: str, stock_code: str) -> pd.DataFrame:
                     c["cancel_time"] = pd.to_numeric(
                         c.get("time_int", pd.Series(dtype="float64")), errors="coerce"
                     ).fillna(0).astype(int)
-                    cancels_list.append(c[["side", "cancel_time", "cancel_qty"]])
+
+                    # Compute true latency_ms via exchange_order_no join (Track L-c)
+                    latency_list = []
+                    cancel_ms_list = c["cancel_time"].map(_hhmmssmmm_to_ms).tolist()
+                    if "exchange_order_no" in c.columns:
+                        for eno, c_ms in zip(c["exchange_order_no"].astype(str).str.strip(), cancel_ms_list):
+                            if eno and eno in add_ms_by_eno:
+                                lat = c_ms - add_ms_by_eno[eno]
+                                latency_list.append(float(lat) if lat >= 0 else float("nan"))
+                            else:
+                                latency_list.append(float("nan"))
+                    else:
+                        latency_list = [float("nan")] * len(c)
+
+                    c["latency_ms"] = latency_list
+                    cancels_list.append(c[["side", "cancel_time", "cancel_qty", "latency_ms"]])
 
     if cancels_list:
         result = pd.concat(cancels_list, ignore_index=True)
@@ -307,7 +410,7 @@ def read_cancel_frame(stock_dir: str, stock_code: str) -> pd.DataFrame:
         result["time_int"] = result["cancel_time"]
         return result
 
-    return pd.DataFrame(columns=["side", "cancel_time", "cancel_qty", "time_int"])
+    return pd.DataFrame(columns=["side", "cancel_time", "cancel_qty", "time_int", "latency_ms"])
 
 
 def _derive_bigorder_volume(stock_dir: str, stock_code: str) -> dict[int, float]:

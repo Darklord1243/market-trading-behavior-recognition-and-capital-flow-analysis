@@ -7,13 +7,28 @@
 
 | | |
 |---|---|
-| **Version** | **v1.6.0** (2026-06-22) |
+| **Version** | **v1.6.1** (2026-06-22) |
 | **Pipeline entry** | `python main.py --input <xlsx|glob> -o outputs/ [--date YYYYMMDD]` |
-| **Tests** | `pytest tests/` → **130 passing** (verified 2026-06-22; … → 119 Feature B B.0 → **130 Feature B B.2**) |
+| **Tests** | `pytest tests/` → **131 passing, 2 xfailed** (verified 2026-06-22; … → 130 Feature B B.2 → **131+2xfail Track L-c re-eval infra**; the 2 xfails are the L-c true-latency discriminating tests, dormant) |
 | **Branch at authoring** | `feat/task2-3class-capital-type` |
 | **Canonical source of truth** | brief `docs/AFAC2026_Track1_Project_Brief.docx` (Rev. 7) + `docs/competition-spec/` |
 
 ### Changelog
+- **v1.6.1 (2026-06-22)** — **Track L-c re-eval — true-latency swap REJECTED (not shipped); infra retained.**
+  Re-evaluated swapping true order→cancel latency into `cb_fast_cancel_ratio` against the **active post-B.2 gate**
+  (`parquet:data/202606`, n=24, baseline **0.6599**) — the prior 0.4917→0.4381 regression was on the stale n=10
+  0618 slice **before** B.0 added `cb_fast_cancel_ratio` to `DIMS_RETAIL`, so a fresh measurement was warranted.
+  **Result: FAIL** — weighted_f1 **0.6599 → 0.6500**, 散户 R **5/10 → 4/10** (散户 P rose to 1.00 but recall fell).
+  **Mechanism:** over 1,018,500 cancels, 100% matched `latency_ms` but only **0.64%** had true latency
+  `< CB_FAST_CANCEL_MS` vs **86.8%** under the inter-cancel proxy → true `cb_fast_cancel_ratio` collapses to ~0 and
+  loses discriminating power; the 散户-rarely-fast-cancels signal lives in proxy **burstiness**, not true latency.
+  **Disposition (LIS §6 Track L):** `_cb_features` keeps the inter-cancel proxy (byte-identical to pre-L-c). What
+  shipped is **infra only, zero behavior change** (gate re-verified at 0.6599): `ingest_local.read_cancel_frame`
+  local-path parity (ref-column join + `_hhmmssmmm_to_ms` decode → per-cancel `latency_ms`, matching the parquet
+  path's existing column) + 2 **xfail** minute-boundary discriminating tests + 1 fixture join test (+2 fixture rows
+  on `000001.SZ`). `latency_ms` is dormant, available for a future **re-thresholded / latency-distribution** feature
+  (needs a new prompt; must be measured on unlabeled data — no `CB_FAST_CANCEL_MS` grid-search against labels).
+  Suite **130 → 131 passed + 2 xfailed**. `CB_KEYS` arity unchanged (5); xlsx path untouched. Commit: see below.
 - **v1.6.0 (2026-06-22)** — **Feature B slice B.2 landed** (commit `94ccb90`): `trd_size_entropy` — deal-stream
   print-size heterogeneity as the **4th 散户 diffuseness dim**. New `ingest_parquet.read_deal_sizes_parquet`
   builds a `deal_lookup {(code,date): [print volumes]}` (genuine prints only, `Side ∈ {0,1}`, `Volume > 0`),
@@ -440,6 +455,7 @@ backtest answers (§3.3 auto-DQ). Validation labels are **post-market public inf
 | Combined 0617+0618 (pre–B.0) | 24 | 0.3371 | 0/10 | v1.5.8 gate |
 | Combined 0617+0618 (post–B.0) | 24 | 0.6094 | 4/10 | superseded by B.2 |
 | Combined 0617+0618 (**post–B.2**) | 24 | **0.6599** | **5/10** | **active gate** (`trd_size_entropy`; 散户 P=0.83) |
+| L-c true-latency swap (rejected) | 24 | 0.6500 | 4/10 | **FAIL** vs 0.6599 — proxy kept (v1.6.1); not shipped |
 
 **How it feeds H1–H5 acceptance (additive, not a replacement):**
 - Phase 1b, Phase 2, each Phase 3 batch: the PR records the **proxy-F1 before/after** on the seed set *in addition
@@ -733,12 +749,21 @@ CB, and Track V's real-data proxy.
 > math for all 5 `CB_KEYS`, plumbed via `cancel_lookup`; suite 86→93. **Sequencing (2026-06-18):** L-b ran **after
 > Phase 1b, before Phase 2**.
 >
-> **🟡 Track L-c EVALUATED — proxy kept (v1.5.7).** True order→cancel `latency_ms` is implemented in
-> `read_cancel_frame_parquet` (OrderID self-join, decoded ms, 100% linkage on 委托补全; minute-boundary test green),
-> but swapping it into `cb_fast_cancel_ratio` **regressed** the real proxy-F1 on the 0618 seed (**0.4917 → 0.4381**)
-> because genuine sub-`CB_FAST_CANCEL_MS` latency is vanishingly rare while the inter-cancel burstiness proxy carries
-> more class signal. **Disposition:** keep the inter-cancel proxy per the Track V gate; `latency_ms` infra stays for a
-> future re-thresholded fast-cancel / latency-distribution feature (revisit with more labels/days). Audit risk: none.
+> **✅ Track L-c RE-EVAL COMPLETE — true-latency swap REJECTED (not shipped); infra retained (v1.6.1).**
+> The swap was evaluated **twice** against the gate and failed both times:
+> - Prior (v1.5.7): n=10 0618 slice, **0.4917 → 0.4381**.
+> - Re-eval (v1.6.1): the active **post-B.2** gate `parquet:data/202606` n=24, **0.6599 → 0.6500**, 散户 R **5/10 → 4/10**.
+>   Re-measured because B.0 had since added `cb_fast_cancel_ratio` to `DIMS_RETAIL` — but it still regressed.
+>
+> **Mechanism:** of 1,018,500 cancels, 100% match `latency_ms` yet only **0.64%** are sub-`CB_FAST_CANCEL_MS` true
+> latency vs **86.8%** under the inter-cancel proxy → true `cb_fast_cancel_ratio` collapses to ~0; the 散户 signal
+> lives in proxy **burstiness**, not true latency. **Disposition:** `_cb_features` keeps the inter-cancel proxy
+> (byte-identical to pre-L-c). **Infra retained** (zero behavior change, gate re-verified 0.6599):
+> `read_cancel_frame_parquet` already emits `latency_ms` (OrderID self-join); v1.6.1 adds `ingest_local`
+> local-path parity (ref-column join + `_hhmmssmmm_to_ms` decode) + 2 **xfail** minute-boundary discriminating tests
+> + 1 fixture join test. `latency_ms` is dormant — available for a future **re-thresholded / latency-distribution**
+> feature (new prompt required; measure on unlabeled data, **no** `CB_FAST_CANCEL_MS` grid-search against labels).
+> Audit risk: none.
 
 ---
 
