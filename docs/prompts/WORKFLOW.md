@@ -1,7 +1,7 @@
 # Execution workflow — how the pieces fit (for the team lead)
 
 > Plain-language map of the Sonnet prompt pack. **Not** a prompt — read this in 5 minutes, then dispatch.
-> Spec of record: `docs/LIS.md` **v1.5.2** §6.
+> Spec of record: `docs/LIS.md` **v1.6.0** §6.
 
 ## Operating model (Opus lead ↔ Sonnet executor)
 
@@ -17,7 +17,7 @@ OPUS + YOU      double-verify: git show, pytest, smoke, scope/compliance checkli
 OPUS            update LIS §4 + changelog (or batch docs commit); dispatch next ONE item
 ```
 
-**Rules:** one sequential item at a time in batch 2; never trust subagent reports without fresh command output; Sonnet does **not** edit LIS unless you ask the lead to.
+**Rules:** one sequential item at a time (within a batch); never trust subagent reports without fresh command output; Sonnet does **not** edit LIS unless you ask the lead to.
 
 ---
 
@@ -35,29 +35,57 @@ Parallel dispatch (three Sonnet sessions, disjoint files):
 
 ---
 
-## Batch 2 — SEQUENTIAL (one at a time)
+## Batch 2 — COMPLETE ✅ (2026-06-18)
+
+Sequential dispatch (one Sonnet at a time, file overlap on `features.py`/`label.py`):
+
+| Order | Commit | Tests | Gate |
+|-------|--------|-------|------|
+| Phase 1b (wire normalize) | `18cca42` | 79 → 86 | PASS |
+| Track L-b (real CB math) | `87a60a8` | 86 → 93 | PASS |
+| Phase 2 (RS dtype fix) | `f932504` | 93 → 101 | PASS |
+
+**Suite:** 101 passed. **Open from batch 2:** Track L-c (fast-cancel still an inter-cancel proxy); Track V needs
+V.3 labels + V.4 harness before any real proxy-F1 number exists.
+
+---
+
+## Batch 3 — V.4 ‖ V.3 → P.1 → B.2 → **L-c re-eval** (L-c gated on proxy-F1)
 
 ```
-Phase 1b  ──►  wire normalize_matrix into label.weak_label_matrix (intent stays raw)
-    ↓
-Track L-b ──►  real _cb_features math from reconstructed cancels
-    ↓
-Phase 2   ──►  RS dtype fix (.diff().dt.total_seconds()*1000) + burst <100ms
-    ↓
-Phase 3+  ──►  feature expansion, GBDT head, clustering, … (fill template per LIS §6)
+V.4 harness (Sonnet)   ── ✅  scripts/validate_offline.py
+V.3 labels (HUMAN)     ── ✅  validation_labels.csv (24-key combined gate)
+P.1 parquet ingest     ── ✅  ingest_parquet.py + parquet: input
+B.0 / B.2 retail dims   ── ✅  gate 0.6094 → 0.6599 (n=24 parquet:data/202606)
+   ↓
+L-c re-eval (Sonnet)   ── NEXT  true latency vs inter-cancel proxy
+                                    GATE: weighted_f1 must beat 0.6599, else NOT shipped
+                                    (parquet swap already tried on n=10: 0.4917→0.4381 — see LIS v1.5.7)
 ```
 
-| Order | Prompt | LIS target |
-|-------|--------|------------|
-| **1 — NEXT** | [`sonnet-phase-1b-wire-normalize.md`](sonnet-phase-1b-wire-normalize.md) | Phase 1b |
-| 2 | [`sonnet-track-l-b-cb-features.md`](sonnet-track-l-b-cb-features.md) | Track L-b |
-| 3 | [`sonnet-phase-2-rs-fix.md`](sonnet-phase-2-rs-fix.md) | Phase 2 |
-| 4+ | [`sonnet-phase-execution-template.md`](sonnet-phase-execution-template.md) | Phase 3–6 |
+| Order | Owner | Prompt / spec | Status |
+|-------|-------|---------------|--------|
+| V.4 | Sonnet | [`sonnet-track-v-v4-offline-harness.md`](sonnet-track-v-v4-offline-harness.md) | ✅ |
+| V.3 | **Human** | [`track-v-v3-acceptance-spec.md`](track-v-v3-acceptance-spec.md) | ✅ |
+| P.1 | Sonnet | (LIS §6 Track P) | ✅ |
+| B.2 | Sonnet | [`sonnet-feature-b-b2-size-entropy.md`](sonnet-feature-b-b2-size-entropy.md) | ✅ |
+| **L-c re-eval** | Sonnet | base + [`sonnet-track-l-c-cb-true-latency-addendum.md`](sonnet-track-l-c-cb-true-latency-addendum.md) | **NEXT** |
+| Orchestrator | Opus | [`opus-lead-orchestrator-batch-3-continued.md`](opus-lead-orchestrator-batch-3-continued.md) | **START HERE** |
 
-**Human, anytime (not Sonnet):**
+**Why this order:** V.4 is the measuring instrument — it can be **built** with no real labels (EXAMPLE-only → skip),
+so it runs in parallel with the human V.3 labeling. V.3 is human-only and gates *believing* any win. L-c's proxy→true
+swap is only worth shipping **if it moves the real proxy-F1**, so L-c needs both V.3 and V.4 complete first.
 
-- Track V **V.3** — seed `tests/fixtures/validation_labels.csv` ([`../human_guides/track_v_validation_labels.md`](../human_guides/track_v_validation_labels.md))
-- Track V **V.4** — offline harness `scripts/validate_offline.py`
+**Human vs Sonnet:**
+
+| Item | Human does | Sonnet does |
+|------|-----------|-------------|
+| V.4 | — | builds `scripts/validate_offline.py` + tests (TDD) |
+| V.3 | labels ≥8 cited rows from public sources | **nothing** (never touches the CSV) |
+| L-c | — (lead runs the proxy-F1 gate) | extends `read_cancel_frame` + `_cb_features` (TDD, red-first across a minute boundary) |
+
+**Other human work (anytime, not Sonnet):**
+
 - Track D — more L2 days ([`../human_guides/track_d_l2_procurement.md`](../human_guides/track_d_l2_procurement.md))
 
 ---
@@ -74,23 +102,25 @@ Phase 3+  ──►  feature expansion, GBDT head, clustering, … (fill templat
 
 ## How to run (new session)
 
-**Opus lead (recommended):** paste [`opus-lead-orchestrator-batch-2.md`](opus-lead-orchestrator-batch-2.md) into a new **Claude Code Opus** chat. Opus dispatches Sonnet one track at a time, double-verifies, commits after each GATE PASS, stops for your **"proceed"** between tracks.
+**Opus lead (recommended):** paste [`opus-lead-orchestrator-batch-3-continued.md`](opus-lead-orchestrator-batch-3-continued.md) into a new **Claude Code Opus** chat (post–B.2). Opus dispatches Sonnet for **L-c re-eval only**, double-verifies against gate **0.6599**, commits only on F1 improvement.
 
 **Manual / Sonnet-only:** copy the next Sonnet prompt below → paste into Claude Code **Sonnet** → you verify → commit.
 
 1. Read this file + LIS §4 snapshot.
-2. Open the **next** prompt (batch 2 table) → copy whole file (or let Opus orchestrator read it).
+2. Open the **next** prompt (batch 3 table) → copy whole file (or let Opus orchestrator read it).
 3. Sonnet implements (TDD); **Opus lead commits** after GATE PASS unless you said otherwise.
-4. **Double-verify** — `pytest tests/ -q`, scope diff, smoke if applicable.
-5. Dispatch **one** next prompt after your proceed.
+4. **Double-verify** — `pytest tests/ -q`, scope diff, smoke if applicable; for L-c, the **proxy-F1 must move up**.
+5. Dispatch **one** next item after your proceed.
 
-**Start batch 2 with:** `sonnet-phase-1b-wire-normalize.md` (say **"proceed to Phase 1b"**).
+**Start L-c re-eval with:** base [`sonnet-track-l-c-cb-true-latency.md`](sonnet-track-l-c-cb-true-latency.md) + mandatory [`sonnet-track-l-c-cb-true-latency-addendum.md`](sonnet-track-l-c-cb-true-latency-addendum.md) (say **"proceed to L-c"**).
 
 ---
 
 ## Links
 
-- **Opus orchestrator (batch 2):** [`opus-lead-orchestrator-batch-2.md`](opus-lead-orchestrator-batch-2.md)
+- **Opus orchestrator (batch 3 continued):** [`opus-lead-orchestrator-batch-3-continued.md`](opus-lead-orchestrator-batch-3-continued.md)
+- Opus orchestrator (batch 3 base): [`opus-lead-orchestrator-batch-3.md`](opus-lead-orchestrator-batch-3.md)
+- Opus orchestrator (batch 2, done): [`opus-lead-orchestrator-batch-2.md`](opus-lead-orchestrator-batch-2.md)
 - Prompt index: [`README.md`](README.md)
 - Template: [`sonnet-phase-execution-template.md`](sonnet-phase-execution-template.md)
 - LIS: [`../LIS.md`](../LIS.md)
