@@ -325,3 +325,41 @@ def test_predict_parquet_norm_universe_excludes_universe_from_output(tmp_path):
     })
     preds = harness._predict_parquet(truth, root, norm_universe=["600000.SH"])
     assert set(preds["stock_code"].astype(str)) == {"000001.SZ"}
+
+
+# ---------------------------------------------------------------------------
+# B.2 — deal_size_maps / read_deal_sizes_parquet tests (TDD: written before impl)
+# ---------------------------------------------------------------------------
+
+def test_deal_size_maps_keeps_genuine_prints(tmp_path):
+    """Side in {0,1} kept; other Side excluded; per-secu volume lists returned.
+
+    Fixture deal rows for SecuCode 1:
+      Side=1, Volume=100   -> genuine
+      Side=-1, Volume=999999 -> cancel -> excluded
+      Side=0, Volume=20000 -> genuine
+    Expected genuine volumes for secu 1: [100.0, 20000.0] (order may vary)
+    """
+    from src.ingest_parquet import _deal_size_maps
+    root = write_tiny_parquet(str(tmp_path))
+    maps = _deal_size_maps(root, _DATE, [1])
+    assert 1 in maps
+    assert sorted(maps[1]) == [100.0, 20000.0]
+
+
+def test_read_deal_sizes_parquet_returns_lookup(tmp_path):
+    """read_deal_sizes_parquet returns {(code, date): [volumes]} for genuine prints."""
+    from src.ingest_parquet import read_deal_sizes_parquet
+    root = write_tiny_parquet(str(tmp_path))
+    lk = read_deal_sizes_parquet(root, _DATE, ["000001.SZ"])
+    assert ("000001.SZ", _DATE) in lk
+    assert all(v > 0 for v in lk[("000001.SZ", _DATE)])
+
+
+def test_read_deal_sizes_parquet_missing_stock_is_empty(tmp_path):
+    """A stock with no genuine prints maps to an empty list."""
+    from src.ingest_parquet import read_deal_sizes_parquet
+    root = write_tiny_parquet(str(tmp_path))
+    # 000002.SZ has no deal rows with Side in {0,1} in the fixture
+    lk = read_deal_sizes_parquet(root, _DATE, ["000002.SZ"])
+    assert lk[("000002.SZ", _DATE)] == []

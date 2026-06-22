@@ -83,6 +83,17 @@ CB_FAST_CANCEL_MS: int = 500  # cancel pairs with inter-cancel interval < 500ms
 RS_BURST_THRESHOLD_MS: int = 100
 
 # ---------------------------------------------------------------------------
+# TRD — deal-stream print-size heterogeneity (Feature B.2)
+# ---------------------------------------------------------------------------
+# Log-spaced size-bin EDGES (SHARES) for trd_size_entropy. Chosen from A-share lot
+# structure — board lot = 100 shares; edges double each step (powers of 2 ×100) so
+# each bin spans roughly one octave of order size. A GLOBAL constant from
+# microstructure reasoning (the lot ladder), NOT fitted to the 24 labels (LIS §3 #3).
+# np.digitize maps each genuine-trade print into one of len(TRD_SIZE_BINS)+1 bins; the
+# entropy denominator is ln(total bins) FIXED, so a few repeated clip sizes stay LOW.
+TRD_SIZE_BINS = [100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200]
+
+# ---------------------------------------------------------------------------
 # Intent gate thresholds (baseline get_intention(), verbatim)
 # ---------------------------------------------------------------------------
 INTENT_BUY_PCT = 0.6

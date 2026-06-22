@@ -65,14 +65,16 @@ DIMS_QUANT = [
 ]
 
 # 散户: retail DIFFUSENESS — positive signal (not an inverse residual). Many small
-# orders by COUNT, few mega prints, and (CB-gated) a LOW fast-cancel rate (retail is
-# not an algo). These are the diagnostic-confirmed separators (see design spec §1.1);
-# the old rhythm/inverse dims (rs_*, ap_unilateral LOW, oss_small_amount) were dead or
-# anti-signal on the real cross-section and were removed.
+# orders by COUNT, few mega prints, heterogeneous (non-clipped) trade-size distribution,
+# and (CB-gated) a LOW fast-cancel rate (retail is not an algo). These are the
+# diagnostic-confirmed separators (see design spec §1.1); the old rhythm/inverse dims
+# (rs_*, ap_unilateral LOW, oss_small_amount) were dead or anti-signal on the real
+# cross-section and were removed.
 DIMS_RETAIL = [
     ("oss_small_count_pct", True, False),     # many small orders by count
     ("oss_mega_count_pct", False, False),     # few mega prints
     ("cb_fast_cancel_ratio", False, True),    # retail rarely fast-cancels [CB]
+    ("trd_size_entropy", True, False),        # heterogeneous human print sizes (B.2)
 ]
 
 NEUTRAL = 0.5  # an absent feature casts no vote: +0.5 to that class score

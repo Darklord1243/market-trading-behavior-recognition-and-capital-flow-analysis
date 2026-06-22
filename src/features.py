@@ -16,7 +16,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from config import CB_FAST_CANCEL_MS, OSS_THRESHOLDS, RS_BURST_THRESHOLD_MS
+from config import CB_FAST_CANCEL_MS, OSS_THRESHOLDS, RS_BURST_THRESHOLD_MS, TRD_SIZE_BINS
 from src.ingest import parse_book_json
 
 log = logging.getLogger(__name__)
@@ -176,6 +176,37 @@ def _pd_features(group: pd.DataFrame) -> dict:
     return {"pd_max_price_impact_pct": max_impact}
 
 
+def _trd_size_entropy(volumes) -> float:
+    """Normalized Shannon entropy of genuine-trade print SIZES over the log-spaced
+    ``TRD_SIZE_BINS`` ladder, in [0, 1].
+
+    Measures size-VALUE heterogeneity (spec §B.2): 散户 = many distinct human sizes
+    (HIGH); 量化 = a few repeated algo clip sizes (LOW); 游资 = mega-skewed (low).
+    The denominator is ``ln(total_bins)`` FIXED — NOT ``ln(non-empty bins)`` — so a
+    2-clip distribution stays low (it would be 1.0 under non-empty normalisation).
+    Empty / single-print / degenerate input -> 0.0.
+    """
+    if volumes is None:
+        return 0.0
+    v = np.asarray(list(volumes), dtype=float)
+    v = v[np.isfinite(v) & (v > 0.0)]
+    if v.size < 2:
+        return 0.0
+    n_bins = len(TRD_SIZE_BINS) + 1
+    idx = np.digitize(v, TRD_SIZE_BINS)                  # 0 .. n_bins-1
+    counts = np.bincount(idx, minlength=n_bins).astype(float)
+    p = counts[counts > 0]
+    p = p / p.sum()
+    h = float(-(p * np.log(p)).sum())
+    denom = np.log(n_bins)
+    return 0.0 if denom <= 0 else float(min(1.0, max(0.0, h / denom)))
+
+
+def _trd_size_entropy_features(volumes) -> dict:
+    """Wrapper mirroring the ``_x_features`` family."""
+    return {"trd_size_entropy": _trd_size_entropy(volumes)}
+
+
 def _cb_features(
     group: pd.DataFrame,
     has_cancel_table: bool,
@@ -268,6 +299,7 @@ def compute_daily_features(
     group: pd.DataFrame,
     has_cancel_table: bool = False,
     cancel_df: "pd.DataFrame | None" = None,
+    deal_volumes=None,                      # NEW: per-print genuine-trade sizes (B.2)
 ) -> dict:
     """Compute the full per-(stock, day) feature vector for one tick group.
 
@@ -278,6 +310,11 @@ def compute_daily_features(
     ``ingest_local.read_cancel_frame``.  When provided and ``has_cancel_table=True``,
     real CB feature values are computed.  When ``None`` (the default), CB values are
     0.0 (backward-compatible: snapshot/xlsx path is unaffected).
+
+    `deal_volumes` is the list of genuine-trade print sizes (shares) for this
+    (stock, day), produced by ``ingest_parquet.read_deal_sizes_parquet`` and threaded
+    through ``aggregate.build_feature_matrix``.  When ``None`` (default — snapshot/
+    xlsx path), ``trd_size_entropy`` is 0.0 (backward-compatible).
     """
     feat: dict[str, float] = {}
     tick_vol = group["tick_volume"]
@@ -290,6 +327,7 @@ def compute_daily_features(
     feat.update(_obp_features(group))
     feat.update(_pd_features(group))
     feat.update(_cb_features(group, has_cancel_table, cancel_df=cancel_df))
+    feat.update(_trd_size_entropy_features(deal_volumes))    # NEW (B.2)
 
     # big-order share (directly available field, summed over ticks)
     if "tick_bigordervolume" in group.columns:

@@ -16,6 +16,15 @@ Cancel data plumbing (Track L-b)
 When present, the per-(stock, day) cancel frame is passed into
 ``compute_daily_features`` so real CB feature values are computed.
 The xlsx / snapshot path passes no ``cancel_lookup`` → backward-compatible.
+
+Deal-size plumbing (Feature B.2)
+----------------------------------
+``build_feature_matrix`` also accepts an optional ``deal_lookup`` mapping
+``(stock_code, date) -> [print volumes]`` produced by
+``ingest_parquet.read_deal_sizes_parquet``. When present, the per-(stock, day) volume
+list is passed into ``compute_daily_features`` as ``deal_volumes`` so the
+``trd_size_entropy`` feature is computed. The xlsx / snapshot path passes no
+``deal_lookup`` → backward-compatible (``trd_size_entropy`` stays 0.0).
 """
 
 from __future__ import annotations
@@ -34,6 +43,7 @@ def build_feature_matrix(
     df: pd.DataFrame,
     has_cancel_table: bool = False,
     cancel_lookup: Optional[dict] = None,
+    deal_lookup: Optional[dict] = None,        # NEW (B.2): {(code, date): [print volumes]}
 ) -> pd.DataFrame:
     """Reduce the cleaned tick frame to one row per (stock_code, transaction_date).
 
@@ -50,6 +60,11 @@ def build_feature_matrix(
         ``pd.DataFrame`` of cancel events (columns: ``side``, ``cancel_time``,
         ``cancel_qty``).  Produced by calling ``ingest_local.read_cancel_frame``
         for each stock-day.  When ``None`` (default), CB values are 0.0.
+    deal_lookup:
+        Optional dict mapping ``(stock_code, date_str)`` → ``[print volumes]``
+        (list of genuine-trade Volume floats). Produced by calling
+        ``ingest_parquet.read_deal_sizes_parquet`` for the day's panel. When
+        ``None`` (default — xlsx/snapshot path), ``trd_size_entropy`` is 0.0.
     """
     rows = []
     keys = []
@@ -57,10 +72,14 @@ def build_feature_matrix(
         cancel_df = None
         if cancel_lookup is not None:
             cancel_df = cancel_lookup.get((code, str(date)))
+        deal_volumes = None
+        if deal_lookup is not None:
+            deal_volumes = deal_lookup.get((code, str(date)))
         feat = compute_daily_features(
             group,
             has_cancel_table=has_cancel_table,
             cancel_df=cancel_df,
+            deal_volumes=deal_volumes,         # NEW (B.2)
         )
         rows.append(feat)
         keys.append((code, date))

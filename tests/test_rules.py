@@ -28,6 +28,7 @@ def _base():
         "ap_unilateral_intensity": 0.2, "pd_max_price_impact_pct": 0.2,
         "pi_time_concentration": 0.2, "obp_big_quote_share": 0.2,
         "rs_interval_cv": 0.2, "rs_burst_ratio": 0.2, "cb_available": 0.0,
+        "trd_size_entropy": 0.2,    # NEW (B.2): neutral-ish, matches other base dims
     }
 
 
@@ -113,11 +114,19 @@ def test_strong_youzi_beats_close_retail():
 def test_retail_max_but_within_margin_yields_runner_up():
     # 散户 is the RAW arg-max but only by < RETAIL_WIN_MARGIN over 量化 -> ineligible ->
     # 量化 (the runner-up) wins. Pins the relative-margin semantics from the other side.
+    #
+    # B.2 re-derivation: DIMS_RETAIL now has 4 dims. trd_size_entropy is set to the
+    # OLD 3-dim score_rt value (~0.7833) so the 4-dim mean equals the old 3-dim mean,
+    # preserving the boundary:
+    #   score_rt = (0.95 + 0.90 + 0.5 + 0.7833) / 4 ≈ 0.783 (same as old 3-dim)
+    #   score_qt = (0.8 + 0.8 + 0.8 + 0.8 + 0.5) / 5 = 0.74
+    #   margin ≈ 0.783 - 0.74 = 0.043 < 0.05 → 量化 wins
     feat = _base()
     feat.update({
         "oss_small_count_pct": 0.95, "oss_mega_count_pct": 0.10,   # retail ~0.783
         "oss_small_amount_pct": 0.8, "rs_burst_ratio": 0.8,
         "rs_interval_cv": 0.2, "ap_unilateral_intensity": 0.2,     # quant ~0.74
+        "trd_size_entropy": 0.7833,  # re-pin: preserves old 3-dim score_rt as 4-dim mean
     })
     label, scores = score_capital_type(feat)
     assert scores[2] == max(scores)                                # 散户 is raw max
@@ -130,11 +139,18 @@ def test_retail_wins_at_exact_win_margin():
     # Boundary: score_rt sits exactly at max(others)+RETAIL_WIN_MARGIN. The guard uses
     # >=, so 散户 stays eligible and wins. (If float representation makes this ambiguous,
     # nudge oss_small_count_pct up by 0.001 — the point is to pin the >= boundary.)
+    #
+    # B.2 re-derivation: DIMS_RETAIL now has 4 dims. trd_size_entropy is set to the
+    # OLD 3-dim score_rt value (0.75) so the 4-dim mean equals the old 3-dim mean:
+    #   score_rt = (0.90 + 0.85 + 0.5 + 0.75) / 4 = 0.75
+    #   score_qt = (0.75 + 0.75 + 0.75 + 0.75 + 0.5) / 5 = 0.70
+    #   margin = 0.75 - 0.70 = 0.05 = RETAIL_WIN_MARGIN → eligible → 散户 wins
     feat = _base()
     feat.update({
         "oss_small_count_pct": 0.90, "oss_mega_count_pct": 0.15,   # retail = 0.75
         "oss_small_amount_pct": 0.75, "rs_burst_ratio": 0.75,
         "rs_interval_cv": 0.25, "ap_unilateral_intensity": 0.25,   # quant = 0.70
+        "trd_size_entropy": 0.75,  # re-pin: preserves old 3-dim score_rt as 4-dim mean
     })
     label, scores = score_capital_type(feat)
     assert scores[2] == max(scores)
@@ -183,6 +199,12 @@ def test_retail_wins_on_limit_down_diffuse_flow():
     # sided limit-down). Under the OLD absolute gate, score_yz clears NEUTRAL+0.05
     # and VETOES 散户 -> 游资. Under the new relative win-margin guard, 散户 beats both
     # alternatives by > margin and wins. This test FAILS on the current code.
+    #
+    # B.2 re-derivation: DIMS_RETAIL now has 4 dims. trd_size_entropy is set to the
+    # OLD 3-dim score_rt value (~0.933) so the 4-dim mean equals the old 3-dim mean,
+    # preserving the large win margin over 游资 and 量化:
+    #   score_rt = (0.95 + 0.90 + 0.95 + 0.933) / 4 ≈ 0.933
+    #   score_yz ≈ 0.656, score_qt ≈ 0.15 → 散户 wins by large margin
     feat = _base()
     feat.update({
         "cb_available": 1.0,
@@ -194,6 +216,7 @@ def test_retail_wins_on_limit_down_diffuse_flow():
         "pi_time_concentration": 0.7, "obp_big_quote_share": 0.7,
         "rs_interval_cv": 0.7, "cb_sell_cancel_ratio": 0.7,
         "oss_small_amount_pct": 0.2, "rs_burst_ratio": 0.1,
+        "trd_size_entropy": 0.933,  # re-pin: preserves old 3-dim score_rt as 4-dim mean
     })
     label, scores = score_capital_type(feat)
     assert label == RETAIL, f"limit-down retail misclassified: {scores}"

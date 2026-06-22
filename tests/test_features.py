@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.features import compute_daily_features, _cb_features
+from src.features import compute_daily_features, _cb_features, _trd_size_entropy_features
 
 
 def _book(volumes):
@@ -491,6 +491,60 @@ def test_rs_burst_sub_100ms(dtype):
         f"dtype={dtype}: rs_burst_ratio={f_slow['rs_burst_ratio']} — expected 0.0 for 30s cadence; "
         "old astype('int64')//1_000_000 on datetime64[ms] yields burst=1.0 (FAILS)"
     )
+
+
+# ---------------------------------------------------------------------------
+# B.2 — trd_size_entropy tests (TDD: written before implementation)
+# ---------------------------------------------------------------------------
+
+def test_trd_size_entropy_repeated_clip_is_zero():
+    # One repeated clip size -> a single occupied bin -> H = 0 -> entropy 0.0.
+    out = _trd_size_entropy_features([100.0] * 20)
+    assert out["trd_size_entropy"] == 0.0
+
+
+def test_trd_size_entropy_two_clips_stays_low():
+    # DESIGN LOCK: two repeated clip sizes (量化) must stay LOW, NOT 1.0.
+    # H = ln2 / ln11 ~= 0.693 / 2.398 ~= 0.289.
+    out = _trd_size_entropy_features([100.0] * 10 + [200.0] * 10)
+    assert 0.0 < out["trd_size_entropy"] < 0.35
+
+
+def test_trd_size_entropy_heterogeneous_is_high():
+    # Six distinct sizes across six bins (散户) -> H = ln6 / ln11 ~= 0.747.
+    out = _trd_size_entropy_features([150.0, 300.0, 600.0, 1200.0, 2400.0, 4800.0])
+    assert out["trd_size_entropy"] > 0.6
+
+
+def test_trd_size_entropy_heterogeneous_beats_two_clip():
+    lo = _trd_size_entropy_features([100.0] * 10 + [200.0] * 10)["trd_size_entropy"]
+    hi = _trd_size_entropy_features([150.0, 300.0, 600.0, 1200.0, 2400.0, 4800.0])["trd_size_entropy"]
+    assert hi > lo
+
+
+def test_trd_size_entropy_mega_skewed_is_low():
+    # 游资: a wall of mega prints + a couple of small ones -> skewed -> low.
+    out = _trd_size_entropy_features([80000.0] * 18 + [100.0, 200.0])
+    assert out["trd_size_entropy"] < 0.30
+
+
+def test_trd_size_entropy_empty_and_degenerate_are_zero():
+    assert _trd_size_entropy_features([])["trd_size_entropy"] == 0.0
+    assert _trd_size_entropy_features(None)["trd_size_entropy"] == 0.0
+    assert _trd_size_entropy_features([500.0])["trd_size_entropy"] == 0.0   # < 2 prints
+
+
+def test_trd_size_entropy_excludes_nonpositive():
+    # Non-positive / non-finite sizes are dropped before binning.
+    a = _trd_size_entropy_features([150.0, 300.0, 600.0, 1200.0, 2400.0, 4800.0])["trd_size_entropy"]
+    b = _trd_size_entropy_features([0.0, -5.0, 150.0, 300.0, 600.0, 1200.0, 2400.0, 4800.0])["trd_size_entropy"]
+    assert a == b
+
+
+def test_compute_daily_features_no_deal_volumes_is_zero(synthetic_group):
+    # Backward-compat: snapshot/xlsx path (deal_volumes=None) -> trd_size_entropy 0.0.
+    feat = compute_daily_features(synthetic_group)            # no deal_volumes kwarg
+    assert feat["trd_size_entropy"] == 0.0
 
 
 @pytest.mark.parametrize("dtype", ["datetime64[ms]", "datetime64[ns]"])

@@ -227,7 +227,11 @@ def _build_parquet_matrix(
 ) -> pd.DataFrame:
     """Build a feature matrix over (labeled ∪ norm_universe) for realistic ranks."""
     from src import aggregate
-    from src.ingest_parquet import load_parquet, read_cancel_frame_parquet
+    from src.ingest_parquet import (
+        load_parquet,
+        read_cancel_frame_parquet,
+        read_deal_sizes_parquet,           # NEW (B.2)
+    )
 
     panel = _panel_keys(labeled_keys, norm_universe)
     df = load_parquet(root, date, keys=panel)
@@ -246,8 +250,10 @@ def _build_parquet_matrix(
                 exc,
             )
 
+    deal_lookup = read_deal_sizes_parquet(root, date, panel)     # NEW (B.2): one batch deal read
+
     return aggregate.build_feature_matrix(
-        df, has_cancel_table=True, cancel_lookup=cancel_lookup
+        df, has_cancel_table=True, cancel_lookup=cancel_lookup, deal_lookup=deal_lookup
     )
 
 

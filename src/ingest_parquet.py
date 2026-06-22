@@ -278,6 +278,45 @@ def _bigorder_maps(
     return out
 
 
+def _deal_size_maps(
+    root: str, date: str, secu_codes: Optional[list[int]]
+) -> dict[int, list[float]]:
+    """``{secu: [genuine-trade print volumes]}`` from the ``deal`` stream.
+
+    Mirrors :func:`_bigorder_maps`' read of the same ``逐笔成交`` stream, but keeps
+    EVERY genuine print's size (no BIG_ORDER threshold, no time-binning) — the raw
+    size distribution feeds :func:`features._trd_size_entropy`. Cancels/auction
+    (``Side ∉ {0,1}``) and non-positive volumes are excluded.
+    """
+    df = _read_stream(root, date, "deal", secu_codes, columns=["SecuCode", "Side", "Volume"])
+    if df is None or df.empty:
+        return {}
+    side = pd.to_numeric(df["Side"], errors="coerce")
+    vol = pd.to_numeric(df["Volume"], errors="coerce")
+    keep = df[side.isin((0, 1)) & (vol > 0)].copy()
+    if keep.empty:
+        return {}
+    keep["_v"] = pd.to_numeric(keep["Volume"], errors="coerce")
+    out: dict[int, list[float]] = {}
+    for secu, grp in keep.groupby("SecuCode"):
+        out[int(secu)] = grp["_v"].dropna().astype(float).tolist()
+    return out
+
+
+def read_deal_sizes_parquet(root: str, date: str, keys: list[str]) -> dict:
+    """Public ``deal_lookup`` builder — ``{(stock_code, date_str): [print volumes]}``.
+
+    The deal-stream mirror of the cancel_lookup pattern: ONE batch ``deal`` read for
+    all *keys*. Stocks with no genuine prints map to an empty list (backward-safe).
+    """
+    secus = [stock_code_to_secu(k) for k in keys] if keys else None
+    maps = _deal_size_maps(root, date, secus)
+    out: dict = {}
+    for k in (keys or []):
+        out[(k, str(date))] = maps.get(stock_code_to_secu(k), [])
+    return out
+
+
 def _assign_bigorder(tick_int: pd.Series, big_map: dict[int, float]) -> pd.Series:
     """Assign each large print to the snapshot tick covering its time (left-exclusive).
 
