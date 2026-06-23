@@ -7,13 +7,28 @@
 
 | | |
 |---|---|
-| **Version** | **v1.6.1** (2026-06-22) |
+| **Version** | **v1.6.2** (2026-06-23) |
 | **Pipeline entry** | `python main.py --input <xlsx|glob> -o outputs/ [--date YYYYMMDD]` |
-| **Tests** | `pytest tests/` → **131 passing, 2 xfailed** (verified 2026-06-22; … → 130 Feature B B.2 → **131+2xfail Track L-c re-eval infra**; the 2 xfails are the L-c true-latency discriminating tests, dormant) |
+| **Tests** | `pytest tests/` → **141 passing, 2 xfailed** (verified 2026-06-23; … → 131 Track L-c re-eval infra → **141+2xfail Feature B.3 slice 1**; the 2 xfails are the L-c true-latency discriminating tests, dormant) |
 | **Branch at authoring** | `feat/task2-3class-capital-type` |
 | **Canonical source of truth** | brief `docs/AFAC2026_Track1_Project_Brief.docx` (Rev. 7) + `docs/competition-spec/` |
 
 ### Changelog
+- **v1.6.2 (2026-06-23)** — **Feature B slice B.3 (slice 1) landed** (commit `497bbce`): **limit-UP regime
+  de-contamination.** Limit-up names with a sealed board show artificially low churn / one-sided flow, which the
+  quant/retail dims read as 量化/散户 — pushing genuine 游资 limit-up plays out of class. B.3 slice 1 adds
+  seal-strength features and a **guarded** limit-UP branch. `features._limit_seal_features` →
+  `limit_seal_up_ratio` / `limit_seal_down_ratio`; `normalize.EXCLUDE` keeps both seal ratios **raw** (not
+  rank-normalized, like the CB ratios); `rules.score_capital_type` gains a limit-UP branch that fires **only when**
+  `limit_seal_up_ratio >= LIMIT_SEAL_MIN (0.5)` (`limit_seal_down_ratio` emitted, reserved for B.3c). Discriminating
+  tests: R1 fails on revert, R2 fails if the branch is made unconditional. **Gate** (`parquet:data/202606`): **n=39
+  (V.3.2-expanded) weighted_f1 0.5934 → 0.6449 (+0.0515)**; **n=24 continuity (0617+0618) held at 0.6599** (no
+  regression). 游资 R **0.40 → 0.60** (recovers 002484, 000048); 量化 F1 0.71 / 散户 F1 0.67 held. Per-class n=39:
+  游资 0.46/0.60/0.52 (sup 10) | 量化 0.65/0.79/0.71 (sup 14) | 散户 0.89/0.53/0.67 (sup 15). Suite **131 → 141
+  passed + 2 xfailed**. Scope: 3 src + 2 tests (no CSV, no CB). **0.6449 is the new active gate.**
+  **B.3c residuals (NEXT, not blocking):** (1) **002008** limit-up 游资 — `limit_seal_up_ratio` 0.389 < 0.5 so the
+  branch does not fire; (2) **605198** limit-up 游资 BORDERLINE — branch fires but correction insufficient (gap 0.38);
+  (3) **3 limit-down 散户→游资 FPs** on n=39 — deferred to B.3c via the already-emitted `limit_seal_down_ratio`.
 - **v1.6.1 (2026-06-22)** — **Track L-c re-eval — true-latency swap REJECTED (not shipped); infra retained.**
   Re-evaluated swapping true order→cancel latency into `cb_fast_cancel_ratio` against the **active post-B.2 gate**
   (`parquet:data/202606`, n=24, baseline **0.6599**) — the prior 0.4917→0.4381 regression was on the stale n=10
@@ -286,10 +301,10 @@ with near-random Task-2 output on real features.**
 | `src/ingest.py` | ✅ real | 65-col read, Beijing clock, cumulative→tick diff, cancel-table detector, book-JSON parser |
 | `src/ingest_local.py` | ✅ real (**L-a**) | Track L: local GBK-CSV adapter — multi-stock `行情`/`委托`/`成交`, Beijing time direct from `时间`, explicit book→JSON, per-exchange cancel reconstruction, `cb_available=1.0` plumbed. CB **values now real** via `features._cb_features` (Track L-b, `87a60a8`); `read_cancel_frame` still returns `side`/`cancel_time`/`cancel_qty` (order-ref columns not yet carried → fast-cancel is an inter-cancel proxy on this path). `load_raw` untouched. |
 | `src/ingest_parquet.py` | ✅ real (**P.1**, `d500d60`) | Parquet L2 adapter for `data/202606/` — filtered reads on `SecuCode`, English schema, ÷100 prices, unified `order` cancels. `read_cancel_frame_parquet` emits `latency_ms` via OrderID self-join (100% linkage, decoded ms; **L-c infra**, not consumed by `_cb_features`). `load_raw` / `ingest_local` untouched. |
-| `src/features.py` | 🟡 **32 of 89 features**; RS family **dtype-portable (Phase 2, `f932504`)** | See gap table below. `_rs_features` now uses `.diff().dt.total_seconds()*1000` (dtype-safe across `[ms]`/`[ns]`); `rs_burst_ratio` = share `< RS_BURST_THRESHOLD_MS` (100ms, absolute); `+rs_split_similarity`. Fixture cv 13.48→1.34, burst 0.99→0. **§7-R1 resolved.** Scope: RS only (PI uses `hour`/`minute`, untouched). |
+| `src/features.py` | 🟡 **34 of 89 features**; RS family **dtype-portable (Phase 2, `f932504`)** | See gap table below. `_rs_features` now uses `.diff().dt.total_seconds()*1000` (dtype-safe across `[ms]`/`[ns]`); `rs_burst_ratio` = share `< RS_BURST_THRESHOLD_MS` (100ms, absolute); `+rs_split_similarity`. Fixture cv 13.48→1.34, burst 0.99→0. **§7-R1 resolved.** **B.3 (v1.6.2): `_limit_seal_features` → `limit_seal_up_ratio` / `limit_seal_down_ratio` (board-seal strength).** Scope: RS only (PI uses `hour`/`minute`, untouched). |
 | `src/aggregate.py` | ✅ real (thin) | groups → daily matrix. `compute_window_features` is an unused seam. |
-| `src/normalize.py` | ✅ real (**Phase 1**), **wired (Phase 1b)** | H1 seam: cross-sample within-day rank→[0,1] (`(r-1)/(n-1)`; excludes `cb_available`/`n_ticks`; n≤1 / constant→0.5). Now **called by `label.weak_label_matrix`** before capital scoring (commit `18cca42`). |
-| `src/rules.py` | ✅ **B.2 landed** | 3-class scorer + **relative** retail win margin (`RETAIL_WIN_MARGIN=0.05`). `DIMS_RETAIL` = positive diffuseness priors (`oss_small_count_pct` HIGH, `oss_mega_count_pct` LOW, `cb_fast_cancel_ratio` LOW [CB-gated], **`trd_size_entropy` HIGH [B.2 deal-stream size heterogeneity]**). 游资/量化 dim sets unchanged. Scoring runs on rank-normalized rows via `label.weak_label_matrix` (Phase 1b). |
+| `src/normalize.py` | ✅ real (**Phase 1**), **wired (Phase 1b)** | H1 seam: cross-sample within-day rank→[0,1] (`(r-1)/(n-1)`; excludes `cb_available`/`n_ticks`; n≤1 / constant→0.5). Now **called by `label.weak_label_matrix`** before capital scoring (commit `18cca42`). **B.3 (v1.6.2): `EXCLUDE` keeps `limit_seal_up_ratio`/`limit_seal_down_ratio` raw** (absolute thresholds, like CB ratios — not rank-normalized). |
+| `src/rules.py` | ✅ **B.3 slice 1 landed** | 3-class scorer + **relative** retail win margin (`RETAIL_WIN_MARGIN=0.05`). `DIMS_RETAIL` = positive diffuseness priors (`oss_small_count_pct` HIGH, `oss_mega_count_pct` LOW, `cb_fast_cancel_ratio` LOW [CB-gated], **`trd_size_entropy` HIGH [B.2 deal-stream size heterogeneity]**). 游资/量化 dim sets unchanged. **B.3 (v1.6.2): guarded limit-UP branch — fires only when `limit_seal_up_ratio ≥ LIMIT_SEAL_MIN (0.5)` to de-contaminate sealed-board 游资 from 量化/散户; `limit_seal_down_ratio` reserved for B.3c.** Scoring runs on rank-normalized rows via `label.weak_label_matrix` (Phase 1b). |
 | `src/label.py` | ✅ real (thin), **normalize-wired (Phase 1b)** | weak labels + confidence (top1−top2 margin; intent gate clearance). Scores capital on `normalize_matrix(matrix)` rows; intent gate (`get_intention`/`_intent_confidence`) reads **raw** rows (absolute thresholds). Red-first panel test in `tests/test_label.py`. |
 | `src/model.py` | ⛔ **STUB** (pass-through) | `CapitalTypeHead.fit/predict` return weak labels unchanged. Seam ready for LightGBM. |
 | `src/cluster.py` | ⛔ **STUB-grade** | `DEFAULT_K=8` clamped, `min(k,n)`; 4 hard-coded pattern predicates; degrades to K=1 on fixture. No K-sweep, Euclidean only. |
@@ -454,8 +469,10 @@ backtest answers (§3.3 auto-DQ). Validation labels are **post-market public inf
 | 0618 only (pre–Fix A panel) | 10 | 0.4917 | 0/3 | superseded for gating |
 | Combined 0617+0618 (pre–B.0) | 24 | 0.3371 | 0/10 | v1.5.8 gate |
 | Combined 0617+0618 (post–B.0) | 24 | 0.6094 | 4/10 | superseded by B.2 |
-| Combined 0617+0618 (**post–B.2**) | 24 | **0.6599** | **5/10** | **active gate** (`trd_size_entropy`; 散户 P=0.83) |
+| Combined 0617+0618 (post–B.2) | 24 | 0.6599 | 5/10 | **n=24 continuity reference** (`trd_size_entropy`; held by B.3b) |
 | L-c true-latency swap (rejected) | 24 | 0.6500 | 4/10 | **FAIL** vs 0.6599 — proxy kept (v1.6.1); not shipped |
+| V.3.2-expanded (pre–B.3b) | 39 | 0.5934 | — | post-V.3.2 gate (adds 15× 0616); 游资 weakest |
+| **V.3.2-expanded (post–B.3b)** | 39 | **0.6449** | **8/15** | **active gate** (B.3 limit-UP de-contamination; 游资 R 0.40→0.60) |
 
 **How it feeds H1–H5 acceptance (additive, not a replacement):**
 - Phase 1b, Phase 2, each Phase 3 batch: the PR records the **proxy-F1 before/after** on the seed set *in addition
@@ -480,7 +497,7 @@ offline harness prints a proxy-F1 number later phases can diff against.
 
 ---
 
-### Feature B — 散户 dispersion / diffuseness  ⟵ **ACTIVE; B.0 ✅, B.2 NEXT**
+### Feature B — 散户 dispersion / diffuseness  ⟵ **ACTIVE; B.0/B.2 ✅, B.3 slice 1 ✅, B.3c NEXT**
 
 > **Design spec:** `docs/superpowers/specs/2026-06-22-retail-dispersion-feature-design.md` · **Plan:**
 > `docs/superpowers/plans/2026-06-22-retail-dispersion-feature.md` · **Sonnet prompt (B.0, done):**
@@ -499,7 +516,9 @@ Remaining 6/10 retail misses are **feature gaps** (low `score_rt` vs yz/qt), not
 |---|---|---|
 | **B.0** | ✅ shipped | beat 0.3371 + 散户 R>0 |
 | **B.1** `retail_diffuseness_idx` | optional | score-neutral composite for Phase 4/5 explainability only |
-| **B.2** `trd_size_entropy` | **NEXT** | beat **0.6094** + 散户 R≥0.40 on n=24; size-**value** heterogeneity on `逐笔成交`, not volume HHI |
+| **B.2** `trd_size_entropy` | ✅ shipped (v1.6.0) | beat 0.6094 + 散户 R≥0.40 on n=24 → **0.6599**, 散户 R 5/10 |
+| **B.3 slice 1** limit-UP de-contamination | ✅ shipped (v1.6.2) | beat 0.5934 on n=39 → **0.6449**; n=24 continuity 0.6599; 游资 R 0.40→0.60 |
+| **B.3c** limit-DOWN de-contamination + edges | **NEXT** | beat **0.6449** on n=39, n=24 continuity ≥ 0.6599; mirror B.3 via `limit_seal_down_ratio ≥ 0.5`. Residuals: 002008 (seal 0.389 < 0.5), 605198 (insufficient correction), 3 limit-down 散户→游资 FPs |
 | RS-on-逐笔 (Option 2) | out of scope | separate track; fixes dead `rs_*` on parquet snapshot path |
 
 **Gate command (every slice):**
