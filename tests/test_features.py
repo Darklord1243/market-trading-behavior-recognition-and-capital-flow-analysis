@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.features import compute_daily_features, _cb_features, _trd_size_entropy_features
+from src.features import compute_daily_features, _cb_features, _trd_size_entropy_features, _limit_seal_features
 
 
 def _book(volumes):
@@ -723,3 +723,120 @@ def test_cb_features_fixture_latency_ms_join():
         f"Expected 0.0 (no fast cancels in fixture), got {result['cb_fast_cancel_ratio']}"
     )
     assert result["cb_available"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# B.3 — limit-seal detector unit tests (TDD: written before implementation)
+# ---------------------------------------------------------------------------
+
+def _make_seal_group(prices, n_ticks=None):
+    """Build a minimal tick group with the given price series.
+
+    prices: list of float values (yuan scale, e.g. 12.0-style)
+    n_ticks: if None, len(prices) is used; else prices is cycled to n_ticks rows.
+    """
+    if n_ticks is None:
+        n_ticks = len(prices)
+    p_series = [prices[i % len(prices)] for i in range(n_ticks)]
+    return pd.DataFrame({
+        "price": p_series,
+        "tick_volume": [1000] * n_ticks,
+        "tick_amount": [10000.0] * n_ticks,
+        "price_change": [0.0] * n_ticks,
+        "hour": [9] * n_ticks,
+        "minute": [30] * n_ticks,
+        "tick_bigordervolume": [0] * n_ticks,
+        "totalbidvolume": [1000] * n_ticks,
+        "totalaskvolume": [1000] * n_ticks,
+        "datetime_utc": pd.date_range("2026-06-16 01:30:00", periods=n_ticks, freq="30s"),
+        "bids": [json.dumps([{"price": prices[0], "volume": 1000.0}])] * n_ticks,
+        "asks": [json.dumps([{"price": prices[0] + 0.01, "volume": 1000.0}])] * n_ticks,
+    })
+
+
+def test_limit_seal_up_sealed_day_high_ratio():
+    """B.3.1 — Sealed limit-up: price pinned at max for most of session -> high ratio.
+
+    20 ticks at the ceiling price + 1 tick below -> seal_up = 20/21 ≈ 0.952.
+    """
+    # 20 ticks at ceiling (12.10) + 1 tick at floor (11.90)
+    prices = [12.10] * 20 + [11.90]
+    g = _make_seal_group(prices)
+    f = _limit_seal_features(g)
+    assert "limit_seal_up_ratio" in f, "key must be present when price col exists"
+    assert "limit_seal_down_ratio" in f, "both keys emitted together"
+    assert f["limit_seal_up_ratio"] == pytest.approx(20 / 21, rel=1e-6)
+    assert f["limit_seal_up_ratio"] > 0.9, "sealed day must yield high up-ratio"
+
+
+def test_limit_seal_up_normal_day_low_ratio():
+    """B.3.2 — Normal trading day: price bounces around -> low seal-up ratio.
+
+    Prices oscillate; only the max tick counts -> seal ratio = 1/n (low).
+    """
+    # 10 distinct prices, max occurs only once
+    prices = [10.0, 10.1, 10.2, 10.3, 10.4, 10.3, 10.2, 10.1, 10.0, 10.5]
+    g = _make_seal_group(prices)
+    f = _limit_seal_features(g)
+    assert f["limit_seal_up_ratio"] == pytest.approx(1 / 10, rel=1e-6)
+    assert f["limit_seal_up_ratio"] < 0.2, "normal day must yield low seal-up ratio"
+
+
+def test_limit_seal_down_sealed_day_high_ratio():
+    """B.3.3 — Sealed limit-down: price pinned at min for most of session -> high down-ratio.
+
+    19 ticks at floor (10.0) + 2 ticks at ceiling (11.0) -> seal_down = 19/21.
+    """
+    prices = [10.0] * 19 + [11.0, 11.0]
+    g = _make_seal_group(prices)
+    f = _limit_seal_features(g)
+    assert f["limit_seal_down_ratio"] == pytest.approx(19 / 21, rel=1e-6)
+    assert f["limit_seal_down_ratio"] > 0.8
+
+
+def test_limit_seal_empty_group_omits_keys():
+    """B.3.4 — Empty group or no price column -> both keys omitted entirely (not 0.0).
+
+    An absent key votes NEUTRAL in _class_score; emitting 0.0 would falsely
+    suppress the seal dims and break the graceful-degradation contract.
+    """
+    # Empty group: no rows
+    empty_g = pd.DataFrame({"price": pd.Series([], dtype=float),
+                            "tick_volume": pd.Series([], dtype=float),
+                            "tick_amount": pd.Series([], dtype=float)})
+    f_empty = _limit_seal_features(empty_g)
+    assert "limit_seal_up_ratio" not in f_empty, "empty group must omit key"
+    assert "limit_seal_down_ratio" not in f_empty, "empty group must omit key"
+
+    # No price column at all
+    no_price = pd.DataFrame({"tick_volume": [1000], "tick_amount": [10000.0]})
+    f_no_price = _limit_seal_features(no_price)
+    assert "limit_seal_up_ratio" not in f_no_price, "no-price-col group must omit key"
+
+
+def test_limit_seal_via_compute_daily_features_present():
+    """B.3.5 — compute_daily_features wires limit_seal_* into the output dict.
+
+    Uses the standard synthetic_group fixture (prices [12.0, 12.1, 12.0, 12.1]);
+    max=12.1 occurs twice -> seal_up = 2/4 = 0.5; both keys must be present.
+    """
+    prices = [12.0, 12.1, 12.0, 12.1]
+    g = _make_seal_group(prices)
+    feat = compute_daily_features(g, has_cancel_table=False)
+    assert "limit_seal_up_ratio" in feat, "compute_daily_features must include limit_seal_up_ratio"
+    assert "limit_seal_down_ratio" in feat, "compute_daily_features must include limit_seal_down_ratio"
+    # seal_up: 12.1 >= 12.1 - 0.01 = 12.09 -> both 12.1 ticks qualify -> 2/4 = 0.5
+    assert feat["limit_seal_up_ratio"] == pytest.approx(0.5, rel=1e-6)
+    # seal_down: 12.0 <= 12.0 + 0.01 = 12.01 -> both 12.0 ticks qualify -> 2/4 = 0.5
+    assert feat["limit_seal_down_ratio"] == pytest.approx(0.5, rel=1e-6)
+
+
+def test_limit_seal_keys_are_raw_not_normalized():
+    """B.3.6 — limit_seal_* must be in normalize.EXCLUDE so they pass through un-ranked.
+
+    A raw [0,1] ratio must reach rules.py; rank-normalization would destroy the
+    LIMIT_SEAL_MIN=0.5 threshold semantics.
+    """
+    from src.normalize import EXCLUDE
+    assert "limit_seal_up_ratio" in EXCLUDE, "limit_seal_up_ratio must be in normalize.EXCLUDE"
+    assert "limit_seal_down_ratio" in EXCLUDE, "limit_seal_down_ratio must be in normalize.EXCLUDE"

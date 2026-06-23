@@ -207,6 +207,61 @@ def _trd_size_entropy_features(volumes) -> dict:
     return {"trd_size_entropy": _trd_size_entropy(volumes)}
 
 
+def _limit_seal_features(group: pd.DataFrame) -> dict:
+    """Intraday limit-seal detector (Feature B.3).
+
+    Computes the fraction of ticks whose price is within tick_eps of the day's
+    extreme (max for limit-up, min for limit-down).
+
+        limit_seal_up_ratio   = mean(price >= day_high - tick_eps)
+        limit_seal_down_ratio = mean(price <= day_low  + tick_eps)
+
+    Price-scale note: ``group["price"]`` is always in yuan-float units when it
+    reaches this function.  The parquet L2 corpus stores raw prices as ×100
+    integers, but ``ingest_parquet._normalise_and_clean`` divides by 100.0
+    (line ~218: ``df["price"] = pd.to_numeric(df["Price"]) / 100.0``), so the
+    column contains values like 12.34 (yuan).  The snapshot/xlsx ingest also
+    delivers yuan-float prices.
+    ``tick_eps=0.01`` = 1 fen = the minimum A-share tick increment, which is the
+    correct granularity: it admits ticks within one minimum move of the extreme
+    (e.g., a sealed stock printing at or 1 fen below the limit) while excluding
+    ticks further away.
+
+    Graceful degradation:
+        If the group's ``price`` column is missing, empty, or contains no
+        finite values, **both keys are omitted entirely** (not emitted as 0.0).
+        An absent key votes NEUTRAL (+0.5) via the existing absent-dim
+        convention in ``rules._class_score`` (line 104-106), which is the
+        correct behaviour: no price series → no regime information.
+
+    Returns
+    -------
+    dict
+        Contains ``limit_seal_up_ratio`` and/or ``limit_seal_down_ratio`` as
+        raw [0, 1] floats when a usable price series is present; empty dict
+        otherwise.  Both keys are always emitted together or not at all.
+    """
+    if "price" not in group.columns:
+        return {}
+    price = group["price"]
+    # Filter to finite values only
+    p_numeric = pd.to_numeric(price, errors="coerce")
+    p_finite = p_numeric.dropna()
+    p_finite = p_finite[np.isfinite(p_finite)]
+    if len(p_finite) == 0:
+        return {}
+    p = p_finite.astype(float)
+    tick_eps = 0.01
+    day_high = float(p.max())
+    day_low = float(p.min())
+    seal_up_ratio = float((p >= day_high - tick_eps).mean())
+    seal_down_ratio = float((p <= day_low + tick_eps).mean())
+    return {
+        "limit_seal_up_ratio": seal_up_ratio,
+        "limit_seal_down_ratio": seal_down_ratio,
+    }
+
+
 def _cb_features(
     group: pd.DataFrame,
     has_cancel_table: bool,
@@ -346,6 +401,15 @@ def compute_daily_features(
         feat["bigorder_volume_pct"] = 0.0
 
     feat["n_ticks"] = float(len(group))
-    # scrub any inf/nan that slipped through
-    return {k: (0.0 if (v is None or not np.isfinite(v)) else float(v))
-            for k, v in feat.items()}
+    # scrub any inf/nan that slipped through (standard features only)
+    result = {k: (0.0 if (v is None or not np.isfinite(v)) else float(v))
+              for k, v in feat.items()}
+
+    # NEW (B.3): limit-seal ratios — added AFTER the scrubber so that graceful
+    # degradation (absent key) is preserved.  An absent key votes NEUTRAL in
+    # rules._class_score; emitting 0.0 would falsely suppress the seal signal.
+    # The dict is empty when no usable price series exists (snapshot/no-price path).
+    seal_feats = _limit_seal_features(group)
+    result.update(seal_feats)
+
+    return result

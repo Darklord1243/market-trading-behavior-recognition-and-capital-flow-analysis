@@ -87,21 +87,52 @@ NEUTRAL = 0.5  # an absent feature casts no vote: +0.5 to that class score
 # and is NOT fitted to labels.
 RETAIL_WIN_MARGIN = 0.05
 
+# Feature B.3 — limit-UP regime de-contamination (slice 1 of 2).
+# When a stock is sealed at the upper price limit for the majority of the session
+# (seal ratio >= 0.5 = "majority of ticks at the ceiling"), two dims become
+# regime-contaminated and should not influence the 游资 vs 量化 decision:
+#   * rs_interval_cv  → falsely LOW in sealed regime (order arrival becomes
+#     mechanically regular when the book is locked), which inflates score_qt.
+#   * pd_max_price_impact_pct → falsely LOW in sealed regime (price stops moving
+#     once sealed), which suppresses score_yz.
+# LIMIT_SEAL_MIN = 0.5 is a principled "majority-of-session sealed" threshold.
+# It is NOT grid-searched on the 4 labelled limit-up stocks; 0.5 is the natural
+# midpoint of [0,1] meaning "more than half of all ticks were at the limit price",
+# which is the minimum evidence of a genuine seal.
+LIMIT_SEAL_MIN = 0.5
+
 
 def _clip01(x: float) -> float:
     return 0.0 if x < 0 else (1.0 if x > 1 else x)
 
 
-def _class_score(feat: dict, dims: list, cb_available: bool) -> float:
+def _class_score(
+    feat: dict,
+    dims: list,
+    cb_available: bool,
+    skip_keys: "frozenset[str] | None" = None,
+) -> float:
     """Mean normalised vote across a class's dimensions, in [0, 1].
 
     Absent dims (missing/NaN key, or a CB dim with no cancel table) vote NEUTRAL
     so the score stays comparable across classes regardless of dim count.
+
+    Parameters
+    ----------
+    skip_keys:
+        Optional set of feature keys to treat as NEUTRAL for this scoring call.
+        Used by the limit-UP regime branch in ``score_capital_type`` to neutralize
+        regime-contaminated dims without altering the dim lists themselves.
     """
     total = 0.0
     for key, high_supports, is_cb in dims:
         raw = feat.get(key, None)
-        absent = (raw is None) or (raw != raw) or (is_cb and not cb_available)
+        absent = (
+            (raw is None)
+            or (raw != raw)
+            or (is_cb and not cb_available)
+            or (skip_keys is not None and key in skip_keys)
+        )
         if absent:
             total += NEUTRAL
             continue
@@ -117,10 +148,50 @@ def score_capital_type(feat: dict) -> tuple[str, list]:
     散户 wins only when score_rt beats BOTH 游资 and 量化 by RETAIL_WIN_MARGIN;
     otherwise the arg-max is between 游资/量化 only. No per-stock thresholds —
     labels are produced in Stage-2.
+
+    Feature B.3 — limit-UP regime de-contamination
+    -----------------------------------------------
+    When ``limit_seal_up_ratio >= LIMIT_SEAL_MIN`` (majority of session sealed at
+    the upper price limit), two dims are neutralized for the 游资/量化 decision:
+      * ``rs_interval_cv`` is excluded from score_qt: a sealed order-book causes
+        mechanically regular order arrival regardless of the actor, so a LOW cv
+        falsely inflates score_qt.
+      * ``pd_max_price_impact_pct`` is excluded from score_yz: price impact
+        collapses once the stock is sealed at the ceiling regardless of capital
+        type, so a LOW impact falsely suppresses score_yz.
+    The 散户 score and the retail guard are unaffected.
     """
     cb_available = float(feat.get("cb_available", 0.0)) > 0.0
-    score_yz = _class_score(feat, DIMS_YOUZI, cb_available)
-    score_qt = _class_score(feat, DIMS_QUANT, cb_available)
+
+    # Feature B.3: detect limit-UP seal regime and build per-class dim-skip sets.
+    seal_up = feat.get("limit_seal_up_ratio")
+    if seal_up is not None and float(seal_up) >= LIMIT_SEAL_MIN:
+        # Regime-contaminated dims: neutralize symmetrically for the 游资/量化 decision.
+        #
+        # rs_interval_cv: artificially LOW when the order-book is sealed regardless
+        # of capital type.  For genuine 游资 this is a false signal (suppresses
+        # score_yz via the True-polarity dim AND inflates score_qt via the
+        # False-polarity dim).  For genuine 量化, cv is also naturally low (machine
+        # cadence) — but in a sealed regime we cannot distinguish regime-driven low
+        # from algo-driven low.  Symmetric neutralization (skip from both yz AND qt)
+        # removes the ambiguous dim from BOTH classes equally, so 量化's other
+        # genuine dims (rs_burst_ratio, oss_small_amount_pct, ap_unilateral_intensity)
+        # still discriminate it correctly.  Asymmetric neutralization (qt only, as
+        # originally designed) was found to regress 量化 limit-up stocks (e.g.
+        # 000100.SZ/20260617) that have strong genuine 量化 evidence but lose too
+        # much score_qt when the single-largest discriminator (cv) is removed.
+        #
+        # pd_max_price_impact_pct: artificially LOW when sealed (price is locked at
+        # the ceiling).  Neutralized from score_yz only (youzi normally has HIGH
+        # impact; this dim is not in DIMS_QUANT so no quant path is affected).
+        skip_qt = frozenset({"rs_interval_cv"})          # falsely-low → inflates qt
+        skip_yz = frozenset({"rs_interval_cv", "pd_max_price_impact_pct"})  # falsely-low dims
+    else:
+        skip_qt = None
+        skip_yz = None
+
+    score_yz = _class_score(feat, DIMS_YOUZI, cb_available, skip_keys=skip_yz)
+    score_qt = _class_score(feat, DIMS_QUANT, cb_available, skip_keys=skip_qt)
     score_rt = _class_score(feat, DIMS_RETAIL, cb_available)
     scores = [score_yz, score_qt, score_rt]
 

@@ -17,7 +17,17 @@ import pandas as pd
 
 # Columns excluded from rank normalization: flags/counts whose raw values
 # are meaningful across the cross-section and should not be replaced.
-EXCLUDE: frozenset[str] = frozenset({"cb_available", "n_ticks"})
+# limit_seal_*_ratio are raw [0,1] proportions whose rule thresholds operate
+# on the raw seal fraction (e.g. LIMIT_SEAL_MIN=0.5 means "majority of ticks
+# were at the limit price").  Rank-normalizing them would destroy this absolute
+# meaning — a stock sealing 80% of the session could rank 0.5 on a day when
+# every name has some seal fraction, making the threshold meaningless.
+EXCLUDE: frozenset[str] = frozenset({
+    "cb_available",
+    "n_ticks",
+    "limit_seal_up_ratio",
+    "limit_seal_down_ratio",
+})
 
 
 def normalize_matrix(matrix: pd.DataFrame) -> pd.DataFrame:
