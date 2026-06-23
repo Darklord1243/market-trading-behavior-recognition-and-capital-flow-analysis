@@ -7,13 +7,34 @@
 
 | | |
 |---|---|
-| **Version** | **v1.6.2** (2026-06-23) |
+| **Version** | **v1.6.3** (2026-06-23) |
 | **Pipeline entry** | `python main.py --input <xlsx|glob> -o outputs/ [--date YYYYMMDD]` |
 | **Tests** | `pytest tests/` → **141 passing, 2 xfailed** (verified 2026-06-23; … → 131 Track L-c re-eval infra → **141+2xfail Feature B.3 slice 1**; the 2 xfails are the L-c true-latency discriminating tests, dormant) |
 | **Branch at authoring** | `feat/task2-3class-capital-type` |
 | **Canonical source of truth** | brief `docs/AFAC2026_Track1_Project_Brief.docx` (Rev. 7) + `docs/competition-spec/` |
 
 ### Changelog
+- **v1.6.3 (2026-06-23)** — **Feature B slice B.3c DEFERRED (no ship; analysis + prototype only).** The handoff
+  hypothesis — "mirror B.3b on the down side via `limit_seal_down_ratio ≥ LIMIT_SEAL_MIN (0.5)`" — was tested by
+  Opus with `--verbose-scores` + a feature probe + a **throwaway prototype** and **rejected** (gate would regress).
+  **Disposition (three independent blockers):**
+  1. **Sub-threshold seal.** Of the 3 limit-down 散户→游资 FPs, only `603778`(0616) has `limit_seal_down_ratio ≥ 0.5`
+     (0.872); `603271`(0618)=0.376 and `603778`(0618)=0.451 sit below — panic limit-downs drift/break the floor, they
+     don't sit pinned. Catching them needs lowering `LIMIT_SEAL_MIN`, i.e. label-driven threshold grid-search (forbidden).
+  2. **Wrong side of the score.** These are 散户-truth with **score_rt ≈ 0.29–0.43, far below score_yz** — the retail
+     guard (`rt ≥ max(yz,qt)+0.05`) can't elevate them by neutralizing yz/qt dims. It is **散户-score suppression, not
+     yz inflation**, so the B.3b mechanism does not transfer.
+  3. **Confounded trigger (the decisive one).** Prototype = neutralize `cb_fast_cancel_ratio` from `DIMS_RETAIL` when
+     `limit_seal_down_ratio ≥ 0.5` (same threshold, no tuning). **Result: n=39 weighted_f1 0.6449 → 0.5876** (散户 R
+     0.53→0.40, 游资 P 0.46→0.40); n=24 continuity unchanged 0.6599 (all effects on 0616, outside the subset). It
+     recovered **0 of 3** targets and **broke 2 previously-correct 散户** (`002323` rt 0.668→0.552, `002717` rt
+     0.675→0.561, both →游资): `limit_seal_down_ratio` saturates on **illiquid / *ST** names (price barely moves →
+     high seal fraction without a genuine panic seal), so it is not a clean limit-down regime trigger and neutralizing
+     genuine low-fast-cancel retail signal destroys correct classifications.
+  **Conclusion:** the limit-down 散户 residuals are **feature-coverage gaps** (weak own-class diffuseness score under a
+  panic-cancel regime), not a seal-de-contamination problem. Better addressed by a stronger 散户 feature (Phase 3 / B.1)
+  than by seal logic. No code change shipped; `rules.py` reverted to `497bbce` state; suite remains 141 passed + 2 xfailed.
+  `603399`(0616) 散户→游资 is a separate non-limit-down (-2.72%) diffuseness gap, also out of seal scope.
 - **v1.6.2 (2026-06-23)** — **Feature B slice B.3 (slice 1) landed** (commit `497bbce`): **limit-UP regime
   de-contamination.** Limit-up names with a sealed board show artificially low churn / one-sided flow, which the
   quant/retail dims read as 量化/散户 — pushing genuine 游资 limit-up plays out of class. B.3 slice 1 adds
@@ -26,9 +47,9 @@
   regression). 游资 R **0.40 → 0.60** (recovers 002484, 000048); 量化 F1 0.71 / 散户 F1 0.67 held. Per-class n=39:
   游资 0.46/0.60/0.52 (sup 10) | 量化 0.65/0.79/0.71 (sup 14) | 散户 0.89/0.53/0.67 (sup 15). Suite **131 → 141
   passed + 2 xfailed**. Scope: 3 src + 2 tests (no CSV, no CB). **0.6449 is the new active gate.**
-  **B.3c residuals (NEXT, not blocking):** (1) **002008** limit-up 游资 — `limit_seal_up_ratio` 0.389 < 0.5 so the
-  branch does not fire; (2) **605198** limit-up 游资 BORDERLINE — branch fires but correction insufficient (gap 0.38);
-  (3) **3 limit-down 散户→游资 FPs** on n=39 — deferred to B.3c via the already-emitted `limit_seal_down_ratio`.
+  **B.3c residuals (was NEXT at v1.6.2; B.3c later DEFERRED — see v1.6.3):** (1) **002008** limit-up 游资 —
+  `limit_seal_up_ratio` 0.389 < 0.5 so the branch does not fire; (2) **605198** limit-up 游资 BORDERLINE — branch
+  fires but correction insufficient (gap 0.38); (3) **3 limit-down 散户→游资 FPs** on n=39.
 - **v1.6.1 (2026-06-22)** — **Track L-c re-eval — true-latency swap REJECTED (not shipped); infra retained.**
   Re-evaluated swapping true order→cancel latency into `cb_fast_cancel_ratio` against the **active post-B.2 gate**
   (`parquet:data/202606`, n=24, baseline **0.6599**) — the prior 0.4917→0.4381 regression was on the stale n=10
@@ -497,7 +518,7 @@ offline harness prints a proxy-F1 number later phases can diff against.
 
 ---
 
-### Feature B — 散户 dispersion / diffuseness  ⟵ **ACTIVE; B.0/B.2 ✅, B.3 slice 1 ✅, B.3c NEXT**
+### Feature B — 散户 dispersion / diffuseness  ⟵ **ACTIVE; B.0/B.2 ✅, B.3 slice 1 ✅, B.3c DEFERRED (v1.6.3)**
 
 > **Design spec:** `docs/superpowers/specs/2026-06-22-retail-dispersion-feature-design.md` · **Plan:**
 > `docs/superpowers/plans/2026-06-22-retail-dispersion-feature.md` · **Sonnet prompt (B.0, done):**
@@ -518,7 +539,7 @@ Remaining 6/10 retail misses are **feature gaps** (low `score_rt` vs yz/qt), not
 | **B.1** `retail_diffuseness_idx` | optional | score-neutral composite for Phase 4/5 explainability only |
 | **B.2** `trd_size_entropy` | ✅ shipped (v1.6.0) | beat 0.6094 + 散户 R≥0.40 on n=24 → **0.6599**, 散户 R 5/10 |
 | **B.3 slice 1** limit-UP de-contamination | ✅ shipped (v1.6.2) | beat 0.5934 on n=39 → **0.6449**; n=24 continuity 0.6599; 游资 R 0.40→0.60 |
-| **B.3c** limit-DOWN de-contamination + edges | **NEXT** | beat **0.6449** on n=39, n=24 continuity ≥ 0.6599; mirror B.3 via `limit_seal_down_ratio ≥ 0.5`. Residuals: 002008 (seal 0.389 < 0.5), 605198 (insufficient correction), 3 limit-down 散户→游资 FPs |
+| **B.3c** limit-DOWN de-contamination | ⛔ **DEFERRED (v1.6.3)** | Mirror-B.3b hypothesis **rejected** — prototype regressed gate **0.6449 → 0.5876** (recovered 0/3 FPs, broke 2 correct 散户). Root cause: sub-threshold seal on 2/3 targets + 散户-score suppression (not yz inflation) + `limit_seal_down_ratio` confounded by illiquid/*ST names. Residuals are **feature-coverage gaps** → re-route to a stronger 散户 feature (B.1 / Phase 3), not seal logic. See v1.6.3 changelog. |
 | RS-on-逐笔 (Option 2) | out of scope | separate track; fixes dead `rs_*` on parquet snapshot path |
 
 **Gate command (every slice):**
