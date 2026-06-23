@@ -1,7 +1,7 @@
 # Execution workflow — how the pieces fit (for the team lead)
 
 > Plain-language map of the Sonnet prompt pack. **Not** a prompt — read this in 5 minutes, then dispatch.
-> Spec of record: `docs/LIS.md` **v1.6.4** §6.
+> Spec of record: `docs/LIS.md` **v1.6.5** §6.
 
 ## Operating model (Opus lead ↔ Sonnet executor)
 
@@ -75,7 +75,7 @@ L-c re-eval (Sonnet)   ── ✅ DONE — true-latency swap REJECTED (gate 0.65
 
 ---
 
-## Batch 4 — V.3.2 labels ✅ → B.3b Feature B.3 ✅ → B.3c DEFERRED → H.2 ✅ → P3.1 DEFERRED → P3.2 next
+## Batch 4 — V.3.2 ✅ → B.3b Feature B.3 ✅ → B.3c DEFERRED → H.2 ✅ → P3.1 DEFERRED → P3.2 DEFERRED → Track D
 
 ```
 HUMAN          appended validation labels (15× 20260616 LHB seats) → V.3.2 (n=39)
@@ -88,7 +88,11 @@ OPUS → SONNET  B.3c limit-DOWN mirror — prototype regressed 0.6449→0.5876 
    ↓
 OPUS           H.2 docs sync (this file + README → v1.6.3) ✅
    ↓
-OPUS           P3.1 Phase 3 first slice — per-dim probe → ⛔ DEFERRED (no ship; LIS v1.6.4); P3.2 next
+OPUS           P3.1 Phase 3 first slice — per-dim probe → ⛔ DEFERRED (no ship; LIS v1.6.4)
+   ↓
+OPUS           P3.2 new-feature probe (buyer-concentration) → ⛔ DEFERRED (n=39 generalization fail; LIS v1.6.5)
+   ↓
+HOLD           gate banked at 0.6449/n=39; no single-feature slices on limit-up 游资 FNs until Track D label/data
 ```
 
 | Order | Owner | Prompt / spec | Status |
@@ -98,12 +102,16 @@ OPUS           P3.1 Phase 3 first slice — per-dim probe → ⛔ DEFERRED (no s
 | B.3c | Sonnet | Feature B.3 limit-down mirror | ⛔ **DEFERRED** `f68527b` (regressed; 3 blockers in LIS v1.6.3) |
 | H.2 | Opus | docs sync (this file + README → v1.6.3) | ✅ |
 | P3.1 | Opus | Phase 3 first slice (scorer-moving) — per-dim probe | ⛔ **DEFERRED** (no ship; 3 blockers, LIS v1.6.4) |
-| P3.2 | Opus → Sonnet | Phase 3 feature batch **wired into `rules.py`** (probe yz/qt triangle first) | 🔜 scope next |
+| P3.2 | Opus | Phase 3 new-feature probe — buyer-account concentration | ⛔ **DEFERRED** (n=39 generalization fail; conflates 游资/散户, LIS v1.6.5) |
+| Track D | **Human** | more L2 days / 游资 labels (stabilize heterogeneous 游资 class) | 🔜 next (no Sonnet slice until then) |
 | Orchestrator | Opus | [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) | **active handoff** |
 
 **Active gate (every future scored slice):** weighted_f1 **0.6449 / n=39** on `parquet:data/202606`; hold
 **n=24 {0617,0618} continuity ≥ 0.6599**. Per-class n=39: 游资 R=0.60 · 量化 F1≈0.71 · 散户 F1≈0.67.
-The CSV is **human-only** — Opus/Sonnet never label or "fix" rows.
+The CSV is **human-only** — Opus/Sonnet never label or "fix" rows. **Gate is banked (v1.6.5):** no further
+constant / single-feature slices on the limit-up 游资 FNs until Track D label/data expansion. **Known scorer-hard
+cases (documented, not chased):** `002008`(0616) genuine 游资 (V.3.3 conf 0.75, microstructure mismatch) ·
+`605198`(0616) borderline 游资 (V.3.3 conf 0.50, 3-day-cumulative/QFII-diluted). **Phase 4 GBDT NOT authorized.**
 
 **B.3c deferral (do not re-open seal logic):** the limit-down 散户→游资 FPs have sub-threshold seals
 (`limit_seal_down_ratio` < 0.5 on 2/3); the failing lever is 散户-score suppression, not 游资 inflation; and
@@ -128,17 +136,17 @@ feature/scoring (Phase 3 or Feature B.1), **not** seal de-contamination.
 
 ## How to run (new session)
 
-**Opus lead (recommended):** paste [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) into a new **Claude Code Opus** chat (current handoff; spec of record LIS v1.6.4 §6). Batch 4 V.3.2/B.3b are done (active gate **0.6449/n=39**), B.3c is **deferred**, and **P3.1 is deferred** (per-dim probe, no ship); the next dispatch is **P3.2** — Opus scopes a Phase 3 feature batch **wired into `rules.py`** (probe the 002008/605198/002354 yz/qt triangle first), you approve the drafted prompt, then Sonnet implements.
+**Opus lead (recommended):** paste [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) into a new **Claude Code Opus** chat (current handoff; spec of record LIS v1.6.5 §6). Batch 4 V.3.2/B.3b are done (active gate **0.6449/n=39**); B.3c, **P3.1, and P3.2 are all deferred** (probe-only, no ship). The gate is **banked** — there is **no Sonnet slice to dispatch**: per the binding disposition, no further constant / single-feature slices on the limit-up 游资 FNs until **Track D** (human) expands labels/days. Do not start Phase 4 GBDT.
 
 **Manual / Sonnet-only:** copy the next Sonnet prompt below → paste into Claude Code **Sonnet** → you verify → commit.
 
 1. Read this file + LIS §4 snapshot.
 2. Open the **next** prompt (batch 4 table) → copy whole file (or let Opus orchestrator read it).
 3. Sonnet implements (TDD); **Opus lead commits** after GATE PASS unless you said otherwise.
-4. **Double-verify** — `pytest tests/ -q`, scope diff, smoke if applicable; for any scored slice (P3.2+), the **proxy-F1 must beat 0.6449/n=39 and hold n=24 {0617,0618} ≥ 0.6599**.
+4. **Double-verify** — `pytest tests/ -q`, scope diff, smoke if applicable; for any future scored slice, the **proxy-F1 must beat 0.6449/n=39 and hold n=24 {0617,0618} ≥ 0.6599**.
 5. Dispatch **one** next item after your proceed.
 
-**Batch 4 status:** V.3.2 ✅ · B.3b Feature B.3 ✅ (0.6449/n=39) · B.3c **deferred** · P3.1 **deferred** (per-dim probe, no ship) · **P3.2 next** — see [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) and LIS v1.6.4 §6.
+**Batch 4 status:** V.3.2 ✅ · B.3b Feature B.3 ✅ (0.6449/n=39) · B.3c **deferred** · P3.1 **deferred** (per-dim probe) · P3.2 **deferred** (buyer-concentration, n=39 generalization fail) · **gate banked → Track D next** — see [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) and LIS v1.6.5 §6.
 
 ---
 

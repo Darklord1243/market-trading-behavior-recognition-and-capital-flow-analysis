@@ -7,13 +7,44 @@
 
 | | |
 |---|---|
-| **Version** | **v1.6.4** (2026-06-23) |
+| **Version** | **v1.6.5** (2026-06-24) |
 | **Pipeline entry** | `python main.py --input <xlsx|glob> -o outputs/ [--date YYYYMMDD]` |
 | **Tests** | `pytest tests/` → **141 passing, 2 xfailed** (verified 2026-06-23; … → 131 Track L-c re-eval infra → **141+2xfail Feature B.3 slice 1**; the 2 xfails are the L-c true-latency discriminating tests, dormant) |
 | **Branch at authoring** | `feat/task2-3class-capital-type` |
 | **Canonical source of truth** | brief `docs/AFAC2026_Track1_Project_Brief.docx` (Rev. 7) + `docs/competition-spec/` |
 
 ### Changelog
+- **v1.6.5 (2026-06-24)** — **Phase 3 slice P3.2 DEFERRED (no ship; feature probe + n=39 generalization only).**
+  Opus ran the mandated feature probe on the `002008`/`605198`/`002354` limit-up triangle (no Sonnet dispatch,
+  no gate run). The strongest **new** axis — **buyer-account concentration** (`buyer_top5` / `buyer_hhi`: HHI &
+  top-k share of executed buy volume across distinct `BuyID`s in the `deal` stream) — separated the *triangle*
+  cleanly (002008 0.075 / 605198 0.133 vs 002354 0.011; the quant spreads buy flow over 232k accounts), but
+  **failed to generalize across n=39** and was **rejected before any code**. **Disposition (three independent
+  blockers):**
+  1. **Conflates 游资 with 散户.** Across n=39, `buyer_top5` median is 量化 0.017 « {游资 0.046, 散户 0.024} —
+     it is a **quant-vs-rest "few-participants / thin-liquidity" proxy**, not a 游资 axis. The single highest value
+     in the whole set is a **散户** (`600193.SH` 0618 = 0.496, only 111 buyer accounts). Wiring it into
+     `DIMS_YOUZI` would lift thin 散户 names into 游资 — the **P3.1 collateral failure relocated to the 散户 class**
+     (currently F1≈0.67, R 8/15).
+  2. **Supporting hypotheses don't generalize.** Buyer−seller asymmetry (`bms_top5`, the "directional accumulation"
+     thesis) shows no class separation (游资 median 0.000, 散户 −0.013, 量化 −0.000; 游资 *mean* is negative,
+     −0.030, dragged by `002856` −0.41). OFI on the triangle left the borderline name ≈flat and is mechanically
+     dominated by the seal queue on a locked board — confounded.
+  3. **The FNs resist it anyway.** `002008`'s own `buyer_top5`=0.075 is not decisively above several quants
+     (002072=0.066, 603065=0.054), and its `seal_up`=0.389 < 0.5 keeps any seal-gated variant **dead** (P3.1
+     blocker #1 persists). `605198` was trimmed to **conf 0.50** in the V.3.3 audit (3-day-cumulative LHB, QFII
+     dilution) — a low-value, borderline target not worth fitting.
+  **Root cause:** the 游资 class is **heterogeneous** (n=10 spans a 56× `buyer_top5` range, 0.003→0.153) and the
+  two FNs are **sealed limit-up names where the genuine cadence/fast-cancel axes collapse to look quant** — no
+  single new feature with a global constant resolves that. **Disposition (human decision, binding):** hold the
+  active gate at **0.6449/n=39**; **no further constant / single-feature slices on the limit-up 游资 FNs until
+  label/data expansion.** **Known scorer-hard cases (documented, not chased):** `002008`(0616) — genuine 游资
+  (V.3.3 confirmed conf 0.75; "scorer 量化 mismatch = microstructure, not LHB contradiction"); `605198`(0616) —
+  BORDERLINE 游资 (V.3.3 conf 0.50; 3-day-cumulative + QFII-diluted attribution). **No code change; `rules.py`
+  unchanged at `497bbce` state; suite 141 passed + 2 xfailed.** **Residual routing:** (1) accept the scorer-hard
+  cases and bank 0.6449; (2) **Track D** — more L2 days / more 游资 labels to stabilize the heterogeneous class
+  before any feature can discriminate it. **Phase 4 GBDT is NOT authorized** (§3.3-trap; bounded by pseudo-label
+  quality).
 - **v1.6.4 (2026-06-23)** — **Phase 3 first slice P3.1 DEFERRED (no ship; per-dim probe only).** Opus scoped
   P3.1 against the B.3b limit-up residuals (`002008`/`605198`, both 0616, 游资→量化) with `--verbose-scores` +
   a **per-dim probe** (no throwaway gate run, no Sonnet dispatch). Conclusion: **no principled global-constant
@@ -697,13 +728,18 @@ on a multi-stock synthetic panel, not the n=1 fixture.
 
 ### Phase 3 — Feature expansion toward the 89-set (snapshot-computable first)
 
-> **Status (v1.6.4): P3.1 ⛔ DEFERRED; P3.2 🔜 next.** P3.1 (first scorer-moving slice on the B.3b limit-up
-> residuals) was scoped by Opus via a per-dim probe and **deferred — no ship, no code change** (three independent
-> blockers: 002008 seal branch dead, 605198 branch fires but insufficient, 002354 collateral flip; root cause =
-> fast-cancel + RS cadence fail to separate yz/qt on limit-up residuals — a **missing axis**, not a threshold).
-> Active gate unchanged **0.6449/n=39**. See v1.6.4 changelog. **Residual routing → P3.2** (a feature batch below,
-> **wired into `rules.py`** with a feature probe on the 002008/605198/002354 triangle *before* Sonnet dispatch —
-> feature-only matrix widening will not move the scorer) **+ V.3.3** (human label audit on ambiguous yz/qt rows).
+> **Status (v1.6.5): P3.1 ⛔ DEFERRED; P3.2 ⛔ DEFERRED; no single-feature slice next.** P3.1 (per-dim probe on the
+> B.3b limit-up residuals) and P3.2 (new-feature probe) were both scoped by Opus and **deferred — no ship, no code
+> change.** P3.1: 002008 seal branch dead / 605198 branch insufficient / 002354 collateral flip (missing axis, not
+> a threshold). P3.2: the strongest new axis, **buyer-account concentration** (`buyer_top5`/`buyer_hhi` over `deal`
+> `BuyID`), separated the triangle but **failed n=39 generalization** — it is a quant-vs-rest liquidity proxy that
+> conflates 游资 with 散户 (highest value in the set is a 散户), so wiring it to `DIMS_YOUZI` would relocate the
+> collateral failure to the 散户 class. **Root cause: the 游资 class is heterogeneous (n=10, 56× concentration
+> range) and the FNs are sealed limit-up names where genuine cadence/cancel axes collapse.** Active gate held at
+> **0.6449/n=39**. See v1.6.5 changelog. **Disposition (binding): no further constant / single-feature slices on
+> the limit-up 游资 FNs until label/data expansion** — `002008` (genuine 游资, scorer-hard microstructure) and
+> `605198` (borderline, conf 0.50) are **documented known-hard cases, not chased.** **Residual routing → Track D**
+> (more L2 days / 游资 labels to stabilize the class). **Phase 4 GBDT is NOT authorized.**
 
 **Goal:** add separable, intraday features. **Files:** `src/features.py`, `tests/test_features.py`,
 `config.py` (any new thresholds as named constants). Add in small, individually-tested commits:
