@@ -3,7 +3,7 @@
 Reusable prompts for **implementation agents** (Sonnet-class). Strategy and LIS maintenance stay with the
 high-reasoning lead (Opus); executors read **one prompt file + `docs/LIS.md` §6** for the target phase or track.
 
-**LIS version:** v1.6.1 (2026-06-22). Batch 3 closed. Batch 4: human label addendum ‖ B.3a diagnostic → **wait CSV** → V.3 verify → B.3b.
+**LIS version:** v1.6.3 (2026-06-23). Batch 3 closed. Batch 4: V.3.2 labels ✅ · B.3b Feature B.3 shipped (active gate **0.6449/n=39**) · B.3c limit-down mirror **DEFERRED** · H.2/P3.1 next.
 
 > **New here? Read [`WORKFLOW.md`](WORKFLOW.md) first** — operating model (Opus → Sonnet → verify), batch status, dispatch order.
 
@@ -14,7 +14,7 @@ high-reasoning lead (Opus); executors read **one prompt file + `docs/LIS.md` §6
 | **1** (parallel: Track L-a, Phase 1, Track V V.1–V.2) | ✅ DONE | 79 passed |
 | **2** (sequential: Phase 1b → L-b → Phase 2) | ✅ DONE | 101 passed |
 | **3** (V.4 ‖ V.3 → P.1 → B.0/B.2 → **L-c re-eval**) | ✅ DONE (L-c swap **rejected**, infra kept) | 131 passed |
-| **4** (label addendum ‖ B.3a → **wait CSV** → V.3.2 verify → B.3b) | 🔜 in progress | 131 passed |
+| **4** (V.3.2 labels ✅ → B.3b Feature B.3 ✅ 0.6449 → B.3c **deferred** → H.2/P3.1) | 🔄 in progress | 141 passed, 2 xfailed |
 
 ## Files
 
@@ -39,8 +39,9 @@ high-reasoning lead (Opus); executors read **one prompt file + `docs/LIS.md` §6
 | [`sonnet-feature-b-b2-size-entropy.md`](sonnet-feature-b-b2-size-entropy.md) | Feature B B.2 — `trd_size_entropy` (shipped `94ccb90`) |
 | [`sonnet-track-l-c-cb-true-latency.md`](sonnet-track-l-c-cb-true-latency.md) | Track L-c — base prompt (true order→cancel latency) |
 | [`sonnet-track-l-c-cb-true-latency-addendum.md`](sonnet-track-l-c-cb-true-latency-addendum.md) | L-c mandatory addendum — gate 0.6599; **swap rejected `51787d0`** |
-| **Batch 4 (label addendum ‖ B.3a → V.3.2 verify → B.3b)** | |
-| [`opus-lead-orchestrator-batch-4.md`](opus-lead-orchestrator-batch-4.md) | **Opus lead — START HERE** (label addendum, V.3.2 verify, Feature B.3) |
+| **Batch 4 (V.3.2 ✅ · B.3b Feature B.3 ✅ 0.6449 · B.3c deferred · H.2/P3.1 next)** | |
+| [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) | **Opus lead — START HERE** (post–B.3c handoff: active gate 0.6449/n=39, P3.1 next) |
+| [`opus-lead-orchestrator-batch-4.md`](opus-lead-orchestrator-batch-4.md) | Opus lead — batch 4 entry prompt (V.3.2/B.3b; baseline numbers superseded by LIS v1.6.3) |
 
 ## Workflow (one line)
 
@@ -58,6 +59,6 @@ Opus orchestrator dispatches Sonnet (one track) → Sonnet implements (TDD, **no
 
 Paste into a fresh **Opus** chat:
 
-> Open `docs/prompts/opus-lead-orchestrator-batch-4.md`. Batch 3 closed (131 tests, gate 0.6599; L-c swap rejected). Run H + B.3a in parallel while I append labels; wait for "CSV ready" → V.3.2 verify → dispatch B.3b against the new active baseline.
+> Open `docs/prompts/opus-lead-orchestrator-batch-4-continued.md` (current handoff; spec of record `docs/LIS.md` v1.6.3 §6). Batch 4: V.3.2 labels ✅, B.3b Feature B.3 shipped (active gate **0.6449/n=39**, 游资 R 0.40→0.60), B.3c limit-down mirror **deferred**. Next: **P3.1** — scope the smallest scorer-moving Phase 3 slice that beats 0.6449/n=39 while holding n=24 {0617,0618} continuity ≥ 0.6599.
 
 Or paste only the orchestrator file path — it is self-contained.
