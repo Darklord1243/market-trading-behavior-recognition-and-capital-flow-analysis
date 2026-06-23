@@ -1,7 +1,7 @@
 # Execution workflow — how the pieces fit (for the team lead)
 
 > Plain-language map of the Sonnet prompt pack. **Not** a prompt — read this in 5 minutes, then dispatch.
-> Spec of record: `docs/LIS.md` **v1.6.3** §6.
+> Spec of record: `docs/LIS.md` **v1.6.4** §6.
 
 ## Operating model (Opus lead ↔ Sonnet executor)
 
@@ -75,7 +75,7 @@ L-c re-eval (Sonnet)   ── ✅ DONE — true-latency swap REJECTED (gate 0.65
 
 ---
 
-## Batch 4 — V.3.2 labels ✅ → B.3b Feature B.3 ✅ → B.3c DEFERRED → H.2/P3.1 (retail-recall focus)
+## Batch 4 — V.3.2 labels ✅ → B.3b Feature B.3 ✅ → B.3c DEFERRED → H.2 ✅ → P3.1 DEFERRED → P3.2 next
 
 ```
 HUMAN          appended validation labels (15× 20260616 LHB seats) → V.3.2 (n=39)
@@ -86,7 +86,9 @@ OPUS → SONNET  B.3b Feature B.3 — limit-UP regime de-contamination; gate 0.5
    ↓
 OPUS → SONNET  B.3c limit-DOWN mirror — prototype regressed 0.6449→0.5876 → DEFERRED (rules.py unchanged)
    ↓
-OPUS           H.2 docs sync (this file + README → v1.6.3); P3.1 Phase 3 first slice — next
+OPUS           H.2 docs sync (this file + README → v1.6.3) ✅
+   ↓
+OPUS           P3.1 Phase 3 first slice — per-dim probe → ⛔ DEFERRED (no ship; LIS v1.6.4); P3.2 next
 ```
 
 | Order | Owner | Prompt / spec | Status |
@@ -94,8 +96,9 @@ OPUS           H.2 docs sync (this file + README → v1.6.3); P3.1 Phase 3 first
 | V.3.2 | **Human labels → Opus verify** | [`track-v-v3-acceptance-spec.md`](track-v-v3-acceptance-spec.md) §1–§5 | ✅ (n=39; baseline 0.5934) |
 | B.3b | Sonnet | Feature B.3 limit-up de-contamination | ✅ `497bbce`+`74b4831` (gate 0.6449) |
 | B.3c | Sonnet | Feature B.3 limit-down mirror | ⛔ **DEFERRED** `f68527b` (regressed; 3 blockers in LIS v1.6.3) |
-| H.2 | Opus | docs sync (this file + README → v1.6.3) | 🔄 |
-| P3.1 | Opus → Sonnet | Phase 3 first slice (scorer-moving) | 🔜 scope next |
+| H.2 | Opus | docs sync (this file + README → v1.6.3) | ✅ |
+| P3.1 | Opus | Phase 3 first slice (scorer-moving) — per-dim probe | ⛔ **DEFERRED** (no ship; 3 blockers, LIS v1.6.4) |
+| P3.2 | Opus → Sonnet | Phase 3 feature batch **wired into `rules.py`** (probe yz/qt triangle first) | 🔜 scope next |
 | Orchestrator | Opus | [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) | **active handoff** |
 
 **Active gate (every future scored slice):** weighted_f1 **0.6449 / n=39** on `parquet:data/202606`; hold
@@ -125,17 +128,17 @@ feature/scoring (Phase 3 or Feature B.1), **not** seal de-contamination.
 
 ## How to run (new session)
 
-**Opus lead (recommended):** paste [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) into a new **Claude Code Opus** chat (current handoff; spec of record LIS v1.6.3 §6). Batch 4 V.3.2/B.3b are done (active gate **0.6449/n=39**) and B.3c is **deferred**; the next dispatch is **P3.1** — Opus scopes a scorer-moving Phase 3 slice, you approve the drafted prompt, then Sonnet implements.
+**Opus lead (recommended):** paste [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) into a new **Claude Code Opus** chat (current handoff; spec of record LIS v1.6.4 §6). Batch 4 V.3.2/B.3b are done (active gate **0.6449/n=39**), B.3c is **deferred**, and **P3.1 is deferred** (per-dim probe, no ship); the next dispatch is **P3.2** — Opus scopes a Phase 3 feature batch **wired into `rules.py`** (probe the 002008/605198/002354 yz/qt triangle first), you approve the drafted prompt, then Sonnet implements.
 
 **Manual / Sonnet-only:** copy the next Sonnet prompt below → paste into Claude Code **Sonnet** → you verify → commit.
 
 1. Read this file + LIS §4 snapshot.
 2. Open the **next** prompt (batch 4 table) → copy whole file (or let Opus orchestrator read it).
 3. Sonnet implements (TDD); **Opus lead commits** after GATE PASS unless you said otherwise.
-4. **Double-verify** — `pytest tests/ -q`, scope diff, smoke if applicable; for any scored slice (P3.1+), the **proxy-F1 must beat 0.6449/n=39 and hold n=24 {0617,0618} ≥ 0.6599**.
+4. **Double-verify** — `pytest tests/ -q`, scope diff, smoke if applicable; for any scored slice (P3.2+), the **proxy-F1 must beat 0.6449/n=39 and hold n=24 {0617,0618} ≥ 0.6599**.
 5. Dispatch **one** next item after your proceed.
 
-**Batch 4 status:** V.3.2 ✅ · B.3b Feature B.3 ✅ (0.6449/n=39) · B.3c **deferred** · **P3.1 next** — see [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) and LIS v1.6.3 §6.
+**Batch 4 status:** V.3.2 ✅ · B.3b Feature B.3 ✅ (0.6449/n=39) · B.3c **deferred** · P3.1 **deferred** (per-dim probe, no ship) · **P3.2 next** — see [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) and LIS v1.6.4 §6.
 
 ---
 

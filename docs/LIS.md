@@ -7,13 +7,36 @@
 
 | | |
 |---|---|
-| **Version** | **v1.6.3** (2026-06-23) |
+| **Version** | **v1.6.4** (2026-06-23) |
 | **Pipeline entry** | `python main.py --input <xlsx|glob> -o outputs/ [--date YYYYMMDD]` |
 | **Tests** | `pytest tests/` → **141 passing, 2 xfailed** (verified 2026-06-23; … → 131 Track L-c re-eval infra → **141+2xfail Feature B.3 slice 1**; the 2 xfails are the L-c true-latency discriminating tests, dormant) |
 | **Branch at authoring** | `feat/task2-3class-capital-type` |
 | **Canonical source of truth** | brief `docs/AFAC2026_Track1_Project_Brief.docx` (Rev. 7) + `docs/competition-spec/` |
 
 ### Changelog
+- **v1.6.4 (2026-06-23)** — **Phase 3 first slice P3.1 DEFERRED (no ship; per-dim probe only).** Opus scoped
+  P3.1 against the B.3b limit-up residuals (`002008`/`605198`, both 0616, 游资→量化) with `--verbose-scores` +
+  a **per-dim probe** (no throwaway gate run, no Sonnet dispatch). Conclusion: **no principled global-constant
+  slice beats 0.6449 without collateral damage.** **Disposition (three independent blockers):**
+  1. **Seal branch is dead on the worst FN.** `002008`(0616) has `limit_seal_up_ratio=0.389 < 0.5`, so the B.3
+     branch never fires; scores `[yz 0.559, qt 0.702, rt 0.135]`. Forcing the branch on lifts yz 0.559→0.565 and
+     suppresses qt 0.702→0.608, but **qt still wins by 0.043** — and `pd_max_price_impact=0.91` is genuine yz
+     evidence whose neutralization *hurts* yz. Driver is `cb_fast_cancel_ratio=0.971` → qt, not a seal artifact.
+  2. **Branch fires but is insufficient.** `605198`(0616) has `limit_seal_up_ratio=0.936` (branch fires) yet
+     scores `[yz 0.366, qt 0.631, rt 0.522]`. The low yz is **genuine, not a contamination artifact**:
+     `pi_time_concentration=0.00`, `cb_sell_cancel=0.00`, `ap_unilateral=0.07`. Needs a **new discriminating
+     feature**, not a constant tweak.
+  3. **Collateral (the decisive one).** `002354`(0616) is a **correct** 量化→量化 at qt−yz margin ≈0.105. Any
+     blunt global yz-lift or qt-suppression large enough to recover the FNs **flips this row** to 量化→游资.
+  **Root cause:** `cb_fast_cancel_ratio` does not separate these limit-up 游资 from this 量化 (002008 0.971 vs
+  002354 0.961), and `rs_interval_cv` raw values cluster too (0.029 vs 0.02 → both score high qt). This is a
+  **missing discriminating axis, not a mis-thresholded one** — fast-cancel + RS cadence fail to separate yz/qt on
+  the limit-up residuals. **No code change shipped; `rules.py` unchanged at `497bbce` state; active gate unchanged
+  0.6449/n=39; suite 141 passed + 2 xfailed.** **Residual routing:** (1) **P3.2** — a Phase 3 feature batch
+  wired into `rules.py` with a feature probe on the `002008`/`605198`/`002354` triangle *before* any Sonnet
+  dispatch (feature-only matrix widening will not move the scorer); (2) **V.3.3** — human label audit on the
+  ambiguous yz/qt rows (`002008` conf 0.75, `605198` conf 0.55 BORDERLINE). **P3.1 is not re-openable as a
+  constant tweak** — only via P3.2 (new feature) or V.3.3 (label correction).
 - **v1.6.3 (2026-06-23)** — **Feature B slice B.3c DEFERRED (no ship; analysis + prototype only).** The handoff
   hypothesis — "mirror B.3b on the down side via `limit_seal_down_ratio ≥ LIMIT_SEAL_MIN (0.5)`" — was tested by
   Opus with `--verbose-scores` + a feature probe + a **throwaway prototype** and **rejected** (gate would regress).
@@ -673,6 +696,14 @@ on a multi-stock synthetic panel, not the n=1 fixture.
 ---
 
 ### Phase 3 — Feature expansion toward the 89-set (snapshot-computable first)
+
+> **Status (v1.6.4): P3.1 ⛔ DEFERRED; P3.2 🔜 next.** P3.1 (first scorer-moving slice on the B.3b limit-up
+> residuals) was scoped by Opus via a per-dim probe and **deferred — no ship, no code change** (three independent
+> blockers: 002008 seal branch dead, 605198 branch fires but insufficient, 002354 collateral flip; root cause =
+> fast-cancel + RS cadence fail to separate yz/qt on limit-up residuals — a **missing axis**, not a threshold).
+> Active gate unchanged **0.6449/n=39**. See v1.6.4 changelog. **Residual routing → P3.2** (a feature batch below,
+> **wired into `rules.py`** with a feature probe on the 002008/605198/002354 triangle *before* Sonnet dispatch —
+> feature-only matrix widening will not move the scorer) **+ V.3.3** (human label audit on ambiguous yz/qt rows).
 
 **Goal:** add separable, intraday features. **Files:** `src/features.py`, `tests/test_features.py`,
 `config.py` (any new thresholds as named constants). Add in small, individually-tested commits:
