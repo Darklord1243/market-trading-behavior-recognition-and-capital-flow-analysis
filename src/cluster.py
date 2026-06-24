@@ -29,108 +29,120 @@ from src.normalize import normalize_matrix, EXCLUDE
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Centroid-driven naming vocabulary
+# Centroid-driven naming vocabulary (P5.1b: relative dominance)
 # ---------------------------------------------------------------------------
-# Each entry is (pattern_type, high_features, low_features, explanation_template).
-# high_features: feature substrings whose centroid rank should be high (≥ threshold).
-# low_features:  feature substrings whose centroid rank should be low.
-# The FIRST entry whose high_features all score above HIGH_THRESH (and low_features
-# all score below LOW_THRESH) wins; fallback is always last.
-# This list is a seed lexicon — selection is driven by which features actually
-# dominate the centroid (centroid-driven, not rigid AND-predicate on exact keys).
-
-HIGH_THRESH = 0.60   # centroid rank considered "high" in normalized [0,1] space
-LOW_THRESH  = 0.40   # centroid rank considered "low"
+# Naming is driven by RELATIVE dominance: for each cluster, the dominant feature
+# is argmax(centroid_mean - global_mean), i.e. the feature on which this cluster
+# sits furthest ABOVE the cross-sectional average.  A single-feature substring
+# lexicon maps that dominant feature to a finance-grounded Chinese label.
 
 FALLBACK_PATTERN_TYPE = "机构长线配置"
 FALLBACK_EXPLANATION  = "各特征无明显极值方向，推断为机构长线低调建仓或均衡持仓"
 
-# (pattern_type, high_substrings, low_substrings, explanation)
-_CENTROID_RULES: list[tuple[str, list[str], list[str], str]] = [
+# Single-feature substring lexicon: list of (substring, pattern_type, explanation_template).
+# The explanation_template uses {feat} as a placeholder for the actual dominant feature name.
+# Order matters only as a priority fallback when multiple substrings could match the same
+# feature name (first match wins).  Fallback is 机构长线配置.
+_SUBSTR_LEXICON: list[tuple[str, str, str]] = [
     (
-        "游资强势连板拉升",
-        ["mega_amount_pct", "active_buy_pct", "time_concentration"],
-        [],
-        "超大单占比高、主动买入比例高、尾盘/开盘成交集中，符合游资短线强势拉升特征",
+        "mega_amount",
+        "游资强势拉升",
+        "超大单占比显著高于市场均值（主导特征: {feat}），符合游资短线强势拉升特征",
     ),
     (
-        "量化高频T0套利",
-        ["small_amount_pct", "burst_ratio"],
-        [],
-        "小单占比高、成交节奏密集，买卖方向均衡，符合量化高频日内套利特征",
+        "mega_count",
+        "游资强势拉升",
+        "超大单笔数显著高于市场均值（主导特征: {feat}），符合游资短线强势拉升特征",
     ),
     (
+        "large_amount",
         "主力资金吸筹建仓",
-        ["active_net_direction", "book_imbalance", "large_amount_pct"],
-        [],
-        "大单净买入主导、盘口买盘占优，符合主力资金低调吸筹建仓特征",
+        "大单占比显著高于市场均值（主导特征: {feat}），符合主力资金低调吸筹建仓特征",
     ),
     (
-        "盘口诱多撤单",
-        ["big_quote_share"],
-        ["active_buy_pct"],
-        "大额挂单占比高但主动买入偏弱，疑似盘口诱多撤单操作",
+        "active_net_direction",
+        "主力资金吸筹建仓",
+        "主动净买入方向显著偏多（主导特征: {feat}），符合主力资金定向建仓特征",
     ),
     (
-        "散户情绪跟风买入",
-        ["active_buy_pct"],
-        ["mega_amount_pct", "large_amount_pct"],
-        "主动买入比例较高但大单占比低，符合散户跟风情绪买入特征",
+        "book_imbalance",
+        "主力资金吸筹建仓",
+        "盘口买卖挂单失衡显著（主导特征: {feat}），符合主力吸筹盘口特征",
     ),
     (
-        "对敲洗盘压制",
-        ["small_amount_pct"],
-        ["book_imbalance", "active_net_direction"],
-        "小单频繁、盘口方向模糊，疑似对敲洗盘或压制出货",
+        "small_amount",
+        "量化高频T0套利",
+        "小单占比显著高于市场均值（主导特征: {feat}），符合量化高频日内套利特征",
+    ),
+    (
+        "burst_ratio",
+        "高频脉冲交易",
+        "成交节奏脉冲比率显著高于市场均值（主导特征: {feat}），符合高频脉冲交易特征",
+    ),
+    (
+        "active_buy",
+        "买盘主动占优",
+        "主动买入比例显著高于市场均值（主导特征: {feat}），买盘力量占主导",
+    ),
+    (
+        "active_sell",
+        "卖压主动出货",
+        "主动卖出比例显著高于市场均值（主导特征: {feat}），卖压主动出货特征明显",
+    ),
+    (
+        "cb_buy_cancel",
+        "盘口撤单博弈",
+        "买方撤单频率显著高于市场均值（主导特征: {feat}），盘口撤单博弈明显",
+    ),
+    (
+        "cb_sell_cancel",
+        "盘口撤单博弈",
+        "卖方撤单频率显著高于市场均值（主导特征: {feat}），盘口撤单博弈明显",
+    ),
+    (
+        "cancel",
+        "盘口撤单博弈",
+        "撤单行为显著高于市场均值（主导特征: {feat}），盘口撤单博弈明显",
+    ),
+    (
+        "big_quote_share",
+        "盘口诱多挂单",
+        "大额挂单占比显著高于市场均值（主导特征: {feat}），疑似盘口诱多挂单操作",
+    ),
+    (
+        "time_concentration",
+        "尾盘/开盘成交集中",
+        "成交时间集中度显著高于市场均值（主导特征: {feat}），符合尾盘或开盘集中交易特征",
     ),
 ]
 
 
-def _centroid_to_name(centroid: dict[str, float]) -> tuple[str, str]:
-    """Map a centroid mean-feature dict to (pattern_type, explanation).
+def _dominant_feature_to_name(dominant_feat: str, delta_val: float) -> tuple[str, str]:
+    """Map a single dominant feature name to (pattern_type, explanation).
 
-    Pure function of centroid values (no randomness, deterministic). Iterates
-    the lexicon and returns the first rule whose high-feature substrings all
-    score >= HIGH_THRESH and low-feature substrings all score <= LOW_THRESH
-    in the centroid. Falls back to FALLBACK_PATTERN_TYPE if no rule matches.
+    Uses substring matching on the lexicon; first match wins.
+    Falls back to FALLBACK_PATTERN_TYPE if no substring matches.
 
     Parameters
     ----------
-    centroid : dict[str, float]
-        Mean of member rows in normalized [0,1] feature space.
+    dominant_feat : str
+        Column name of the feature with the highest (centroid - global_mean) delta.
+    delta_val : float
+        The actual delta value (for context in explanations, not used currently).
     """
-    for pattern_type, high_subs, low_subs, explanation in _CENTROID_RULES:
-        high_vals = [v for k, v in centroid.items() if any(s in k for s in high_subs)]
-        low_vals  = [v for k, v in centroid.items() if any(s in k for s in low_subs)]
+    feat_display = dominant_feat.replace("_", " ")[:40]
+    for substr, pattern_type, explanation_tpl in _SUBSTR_LEXICON:
+        if substr in dominant_feat:
+            explanation = explanation_tpl.format(feat=feat_display)
+            # Guard ≤ 200 chars
+            if len(explanation) > 200:
+                explanation = explanation[:197] + "..."
+            return pattern_type, explanation
 
-        high_ok = all(v >= HIGH_THRESH for v in high_vals) if high_vals else False
-        low_ok  = all(v <= LOW_THRESH  for v in low_vals)  if low_vals  else True
-
-        if high_ok and low_ok:
-            # Build a terse explanation augmented with the actual dominant feature
-            dominant = max(
-                ((k, v) for k, v in centroid.items() if v == v),  # skip NaN
-                key=lambda kv: kv[1],
-                default=("unknown", 0.0),
-            )
-            short_dom = dominant[0].replace("_", " ")[:30]
-            aug = f"（主导特征: {short_dom}）"
-            # Keep total ≤ 200 chars
-            base = explanation
-            full = base + aug if len(base) + len(aug) <= 200 else base
-            return pattern_type, full
-
-    # Fallback: describe the actual dominant axis so the explanation is non-empty
-    if centroid:
-        dominant = max(centroid.items(), key=lambda kv: kv[1])
-        dom_name = dominant[0].replace("_", " ")[:30]
-        explanation = f"{FALLBACK_EXPLANATION}（实际主导: {dom_name}）"
-        # Guard length
-        if len(explanation) > 200:
-            explanation = FALLBACK_EXPLANATION[:197] + "..."
-    else:
-        explanation = FALLBACK_EXPLANATION
-
+    # Fallback
+    explanation = f"{FALLBACK_EXPLANATION}（实际主导: {feat_display}）"
+    if len(explanation) > 200:
+        explanation = FALLBACK_EXPLANATION[:197] + "..."
     return FALLBACK_PATTERN_TYPE, explanation
 
 
@@ -233,17 +245,57 @@ def cluster_patterns(
 
     # --- Centroid-driven naming (uses clustering_feats, not normed, so EXCLUDE cols
     #     are invisible to argmax and lexicon matching) ---
-    records: list[tuple[int, str, str]] = []
     col_names = list(clustering_feats.columns)
 
-    for cid in np.unique(labels):
+    # P5.1b: compute global mean over ALL rows for relative dominance naming
+    global_mean_arr = clustering_feats.values.mean(axis=0) if n > 0 else np.zeros(len(col_names))
+    global_mean_dict = {col: float(global_mean_arr[i]) for i, col in enumerate(col_names)}
+
+    # First pass: assign each cluster its primary relative-dominant label
+    unique_cids = list(np.unique(labels))
+    # Per-cluster info: centroid dict and sorted delta list (descending by delta value)
+    cluster_info: dict[int, tuple[dict[str, float], list[tuple[str, float]]]] = {}
+    for cid in unique_cids:
         members = clustering_feats.values[labels == cid]
         centroid_mean = members.mean(axis=0)
         centroid_dict = {col: float(centroid_mean[i]) for i, col in enumerate(col_names)}
-        name, explanation = _centroid_to_name(centroid_dict)
-        records.append((cid, name, explanation))
+        # Delta vs global mean, sorted descending by delta value
+        delta_sorted = sorted(
+            ((col, centroid_dict[col] - global_mean_dict[col]) for col in col_names),
+            key=lambda kv: kv[1],
+            reverse=True,
+        )
+        cluster_info[cid] = (centroid_dict, delta_sorted)
 
-    name_map = {cid: (nm, ex) for cid, nm, ex in records}
+    # Assign initial names using the primary dominant feature (axis index 0)
+    name_map: dict[int, tuple[str, str]] = {}
+    for cid in unique_cids:
+        centroid_dict, delta_sorted = cluster_info[cid]
+        dominant_feat, dominant_delta = delta_sorted[0]
+        name, explanation = _dominant_feature_to_name(dominant_feat, dominant_delta)
+        name_map[cid] = (name, explanation)
+
+    # P5.1b: guarantee ≥2 distinct pattern_type when K≥2 (deterministic tie-break)
+    # If all K≥2 clusters mapped to the same label, reassign the cluster whose
+    # SECONDARY |delta| is largest to its secondary-axis label, repeat until ≥2 distinct
+    # (or all secondary axes exhausted).
+    if len(unique_cids) >= 2:
+        axis_idx = 1  # start at secondary axis
+        while len({nm for nm, _ in name_map.values()}) < 2:
+            # Find cluster with the largest |delta| at axis_idx
+            candidates = []
+            for cid in unique_cids:
+                _, delta_sorted = cluster_info[cid]
+                if axis_idx < len(delta_sorted):
+                    feat, dval = delta_sorted[axis_idx]
+                    candidates.append((abs(dval), cid, feat, dval))
+            if not candidates:
+                break  # axes exhausted — cannot diversify further
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            _, reassign_cid, feat, dval = candidates[0]
+            new_name, new_expl = _dominant_feature_to_name(feat, dval)
+            name_map[reassign_cid] = (new_name, new_expl)
+            axis_idx += 1
 
     out = pd.DataFrame(
         {

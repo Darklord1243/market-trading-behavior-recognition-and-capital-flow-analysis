@@ -332,3 +332,121 @@ def test_raw_scale_n_ticks_does_not_drive_clustering_or_naming():
             f"Row {idx} explanation mentions EXCLUDE column 'n_ticks': {expl!r}. "
             "The EXCLUDE column must be dropped before centroid naming."
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 8 (P5.1b): relative naming yields ≥3 distinct labels when ≥3 clusters
+# ---------------------------------------------------------------------------
+
+def test_relative_naming_yields_multiple_labels():
+    """Each planted cluster is extreme on a DIFFERENT feature; relative naming
+    must produce ≥3 distinct pattern_type labels.
+
+    This FAILS on the old absolute-threshold naming because all centroids
+    post rank-normalization hover near ~0.5 and no AND-predicate ever fires
+    → every cluster falls to the same 机构长线配置 fallback.
+
+    With relative naming (argmax(centroid - global_mean)), each cluster is
+    assigned the feature it sits FURTHEST ABOVE the day's average, mapping
+    to distinct lexicon entries → ≥3 distinct labels.
+    """
+    rng = np.random.default_rng(42)
+    n = 40  # rows per cluster
+
+    # Cluster A: extreme on mega_amount → should map to 游资* family
+    mega_col = "oss_mega_amount_pct"
+    # Cluster B: extreme on small_amount → should map to 量化* or high-freq family
+    small_col = "oss_small_amount_pct"
+    # Cluster C: extreme on active_buy → should map to 买盘* family
+    buy_col = "ap_active_buy_pct"
+
+    base_cols = [
+        "oss_mega_amount_pct",
+        "oss_large_amount_pct",
+        "oss_small_amount_pct",
+        "ap_active_buy_pct",
+        "ap_active_net_direction",
+        "pi_time_concentration",
+        "rs_burst_ratio",
+        "book_imbalance",
+        "obp_big_quote_share",
+    ]
+
+    def make_cluster(dominant_col: str, high_val: float, low_val: float) -> pd.DataFrame:
+        """Build a cluster with dominant_col high and all others low."""
+        data = {c: rng.uniform(low_val - 0.05, low_val + 0.05, n) for c in base_cols}
+        data[dominant_col] = rng.uniform(high_val - 0.05, high_val + 0.05, n)
+        return pd.DataFrame(data)
+
+    grp_a = make_cluster(mega_col,  high_val=0.90, low_val=0.05)
+    grp_b = make_cluster(small_col, high_val=0.90, low_val=0.05)
+    grp_c = make_cluster(buy_col,   high_val=0.90, low_val=0.05)
+
+    df = pd.concat([grp_a, grp_b, grp_c], ignore_index=True)
+
+    result = cluster_patterns(df, k_range=(3, 5))
+
+    unique_labels = result["pattern_type"].unique()
+    assert len(unique_labels) >= 3, (
+        f"Expected ≥3 distinct pattern_type labels (one per planted dominant feature), "
+        f"got {len(unique_labels)}: {list(unique_labels)}. "
+        "Relative naming (argmax of centroid-global_mean delta) should distinguish "
+        "clusters extreme on different features."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 9 (P5.1b): ≥2 distinct labels guaranteed when K≥2 (tie-break exercises)
+# ---------------------------------------------------------------------------
+
+def test_naming_guarantees_two_labels_when_k_ge_2():
+    """Two clusters share the same top-delta axis but differ on a secondary axis;
+    the tie-break must still produce ≥2 distinct pattern_type labels.
+
+    Cluster A: extreme on mega_amount (top), secondary high on active_buy
+    Cluster B: extreme on mega_amount (top), secondary high on small_amount
+    Both share the same argmax(delta) on mega_amount.  Without the tie-break
+    both would receive the same label.  The tie-break must reassign the cluster
+    with the largest secondary |delta| to its secondary-axis label → ≥2 distinct.
+    """
+    rng = np.random.default_rng(99)
+    n = 40  # rows per cluster
+
+    # Both clusters are high on mega_amount so same primary dominant feature
+    # Cluster A is additionally high on active_buy
+    # Cluster B is additionally high on small_amount
+    base_cols = [
+        "oss_mega_amount_pct",
+        "oss_large_amount_pct",
+        "oss_small_amount_pct",
+        "ap_active_buy_pct",
+        "ap_active_net_direction",
+        "pi_time_concentration",
+        "rs_burst_ratio",
+        "book_imbalance",
+        "obp_big_quote_share",
+    ]
+
+    # Cluster A: high mega + high active_buy, everything else mid
+    data_a = {c: rng.uniform(0.40, 0.55, n) for c in base_cols}
+    data_a["oss_mega_amount_pct"] = rng.uniform(0.80, 0.95, n)  # primary (both share)
+    data_a["ap_active_buy_pct"]   = rng.uniform(0.70, 0.85, n)  # secondary (A only)
+    grp_a = pd.DataFrame(data_a)
+
+    # Cluster B: high mega + high small_amount, everything else mid
+    data_b = {c: rng.uniform(0.40, 0.55, n) for c in base_cols}
+    data_b["oss_mega_amount_pct"] = rng.uniform(0.80, 0.95, n)  # primary (both share)
+    data_b["oss_small_amount_pct"] = rng.uniform(0.70, 0.85, n)  # secondary (B only)
+    grp_b = pd.DataFrame(data_b)
+
+    df = pd.concat([grp_a, grp_b], ignore_index=True)
+
+    result = cluster_patterns(df, k_range=(2, 4))
+
+    unique_labels = result["pattern_type"].unique()
+    assert len(unique_labels) >= 2, (
+        f"Expected ≥2 distinct pattern_type labels (tie-break guarantee), "
+        f"got {len(unique_labels)}: {list(unique_labels)}. "
+        "When two clusters share the same primary dominant feature, the tie-break "
+        "must reassign one to its secondary-axis label."
+    )
