@@ -1,11 +1,11 @@
-# Opus lead orchestrator — Batch 4 continued (post–B.3c DEFERRED → H.2 ✅ → P3.1 DEFERRED → P3.2 DEFERRED → gate banked, Track D)
+# Opus lead orchestrator — Batch 4 continued (post–P3.2 DEFERRED → V.3.3 ✅ → active gate 0.6689/n=53)
 
 > **Paste this entire file** into a **new Claude Code Opus** session.
 > **Human team lead:** approve each step with **"proceed to …"** between items.
 > **Operating model:** `docs/prompts/opus-lead-orchestrator-batch-3.md`
 >   (DISPATCH → MONITOR → INSPECT → VERIFY-1 → VERIFY-2 → GATE).
 > **Batch 4 entry prompt:** `docs/prompts/opus-lead-orchestrator-batch-4.md` (V.3.2 / B.3b phases — now DONE; baseline numbers there are stale).
-> **Spec of record:** `docs/LIS.md` **v1.6.5** §6.
+> **Spec of record:** `docs/LIS.md` **v1.6.6** §6.
 > **Map:** `docs/prompts/WORKFLOW.md`
 
 ---
@@ -35,16 +35,18 @@ one Sonnet subagent at a time. Wait for the human **"proceed to …"** before ea
 |------|--------|
 | Branch | `feat/task2-3class-capital-type` |
 | Last shipped feature | `497bbce` feat B.3 limit-up de-contamination |
-| LIS state | v1.6.5 — B.3c/P3.1/**P3.2 all DEFERRED** (probe-only, no ship); gate banked 0.6449/n=39; Track D next |
-| Recent commits | `497bbce` feat B.3 → `74b4831` LIS v1.6.2 → `f68527b` LIS v1.6.3 → (H.2 docs sync) |
+| LIS state | v1.6.6 — V.3.3 verify ✅; active gate **0.6689/n=53**; B.3c/P3.1/P3.2 DEFERRED; Track D optional |
+| Recent commits | `f2e8b94` V.3.3 CSV → `2f9ff8d` LIS v1.6.5 → … → `497bbce` feat B.3 |
 
-### Active gate (no B.3c code shipped)
+### Active gate
 | Set | n | weighted_f1 | Notes |
 |-----|---|-------------|-------|
-| **Active gate** | 39 | **0.6449** | post–B.3 slice 1 (ship criterion for all future slices) |
-| **Continuity reference** | 24 {0617,0618} | **0.6599** | must not regress |
+| **Active gate** | **53** | **0.6689** | post–V.3.3 20260622 addendum (ship criterion for all future slices) |
+| **Prior reference** | 39 | 0.6449 | post–B.3 slice 1 (delta baseline) |
+| **Continuity reference** | 24 {0617,0618} | **0.6599** | must not regress (held at floor) |
 | Test suite | — | **141 passed, 2 xfailed** | L-c discriminating xfails dormant |
-| Per-class n=39 | — | 游资 P=0.46 R=0.60 F1=0.52 · 量化 F1≈0.71 · 散户 F1≈0.67 | 游资 R recovered 0.40→0.60 in B.3b |
+| Per-class n=53 | — | 游资 F1≈0.55 (s14) · 量化 F1≈0.70 (s18) · 散户 F1≈0.72 (s21) | 游资 still weakest |
+| 20260622-only (diagnostic) | 14 | 0.7190 | informational |
 
 **Gate command (every scored slice):**
 ```bash
@@ -64,7 +66,9 @@ For n=24 continuity: pandas-filter labels to {20260617, 20260618} keys — do no
 | V.3.2 label verify | ✅ | `ab0595d` — 15× 20260616 rows; active pre-B.3b gate 0.5934/n=39 |
 | B.3b Feature B.3 slice 1 | ✅ | `497bbce` + `74b4831` — limit-UP de-contamination; gate 0.5934→0.6449 |
 | B.3c limit-DOWN mirror | ⛔ DEFERRED | `f68527b` — prototype regressed 0.6449→0.5876; `rules.py` unchanged |
-| H.2 docs sync → v1.6.3 | ✅ | README + WORKFLOW prompt pack aligned to LIS v1.6.3 |
+| H.2 docs sync → v1.6.3 | ✅ | README + WORKFLOW prompt pack |
+| P3.1 / P3.2 | ⛔ DEFERRED | v1.6.4 / v1.6.5 — probe-only, no ship |
+| **V.3.3 verify (20260622)** | ✅ | `f2e8b94` — 14 rows; gate 0.6449/n=39 → **0.6689/n=53**; 53/53 joined |
 
 ### B.3c deferral — disposition (read before P3.1 scoping)
 Do **not** re-open B.3c seal logic. Three independent blockers documented in LIS v1.6.3:
@@ -107,7 +111,7 @@ conda run -n base pytest tests/ -q
 PYTHONIOENCODING=utf-8 "C:/Users/ASUS/anaconda3/python.exe" -u scripts/validate_offline.py \
   --labels tests/fixtures/validation_labels.csv --input parquet:data/202606 1>gate.out 2>gate.err
 ```
-Paste summary. If gate ≠ 0.6449 or suite ≠ 141/2xfail, stop and report delta. Clean up `gate.out`/`gate.err` after.
+Paste summary. If gate ≠ **0.6689/n=53** or suite ≠ 141/2xfail, stop and report delta. Clean up `gate.out`/`gate.err` after.
 
 ---
 
@@ -157,36 +161,41 @@ resolves it.
 **Known scorer-hard cases (documented, NOT chased):**
 | Key | Label | Status |
 |-----|-------|--------|
-| `002008`(0616) | 游资 | genuine 游资 (V.3.3 conf 0.75; "scorer 量化 mismatch = microstructure, not LHB contradiction") |
-| `605198`(0616) | 游资 | BORDERLINE (V.3.3 conf 0.50; 3-day-cumulative LHB, QFII-diluted attribution) |
+| `002008`(0616) | 游资 | genuine 游资 (V.3.3 conf 0.75; microstructure mismatch) |
+| `605198`(0616) | 游资 | BORDERLINE (V.3.3 conf 0.50; 3-day-cumulative + QFII-diluted) |
+| `000657`(0622) | 游资 | BORDERLINE scorer-hard (conf 0.55; 机构专用 on buy confounds) |
 
 ---
 
-## Next — Track D (HUMAN; no Sonnet slice to dispatch)
+## V.3.3 — ✅ DONE (20260622 addendum; LIS v1.6.6)
 
-**Binding disposition:** **no further constant / single-feature slices on the limit-up 游资 FNs until label/data
-expansion.** The gate is banked at **0.6449/n=39**. The 游资 class is too heterogeneous (n=10) and too thinly
-labeled for a single feature to discriminate it; the recovery path is **more data**, not more rules.
+**Result:** 14× 20260622 rows (游资=4, 量化=4, 散户=6). Harness: **53/53 joined, 0 dropped.**
+**Active gate:** n=39→53, F1 **0.6449→0.6689** (+0.0240). n=24 continuity **0.6599 held**. No code change.
+Improvement is **label expansion only** — not justification for a single-feature Sonnet slice.
 
-- **Track D (human)** — more L2 trading days and/or more cited 游资 labels (LHB-grounded) to stabilize the 游资
-  class. See [`../human_guides/track_d_l2_procurement.md`](../human_guides/track_d_l2_procurement.md). Only after the
-  labeled 游资 support grows does re-scoping a Phase 3 feature (or a Phase 4 head) become worthwhile.
-- When labels/days expand: re-run the n=39+ probe BEFORE any slice; a feature must separate 游资 from **both** 量化
-  **and** 散户 across the expanded set, not just the triangle (the P3.2 lesson).
+---
+
+## Next — Track D optional (HUMAN); no Sonnet until full-set probe re-run
+
+**Binding disposition:** **0.6689/n=53** is the ship criterion; hold n=24 ≥ **0.6599**. P3.1/P3.2 deferrals stand.
+
+- **Track D (human, optional)** — append **20260623+** LHB rows; prioritize **游资** (still weakest, F1≈0.55, n=14).
+- When labels expand: human **"CSV ready"** → Opus verify → update LIS baseline.
+- Before any Sonnet slice: re-run feature probes on the **full n=53+ set** (P3.2 lesson applies).
 
 ---
 
 ## What you do NOT do
 - Do not re-run B.3b, B.3c, V.3.2, P3.1, or P3.2 (all settled).
-- Do not re-open P3.1/P3.2 as a constant or single-feature tweak — both probes were decisive; route via Track D.
-- Do not ship any single-feature / global-constant slice targeting the limit-up 游资 FNs until label/data expansion.
-- **Do not start Phase 4 GBDT** — not authorized (§3.3-trap; bounded by pseudo-label quality).
-- Do not edit `validation_labels.csv` (human-only; n=39 {0616,0617,0618}).
+- Do not re-open P3.1/P3.2 as constant or single-feature tweaks.
+- Do not dispatch Sonnet without human-approved prompt AND full-set feature probe PASS.
+- **Do not start Phase 4 GBDT** — not authorized.
+- Do not edit `validation_labels.csv` (human-only).
 - Do not implement tracks yourself.
 - Do not grid-search thresholds on labels.
 
 ---
 
 ## Parallel / anytime
-- **Track D** label/day expansion — Human → Opus verify (read-only). The CSV is human-only.
+- **Track D** label/day expansion (e.g. 20260623) — Human append CSV → Opus verify on **"CSV ready"**.
 - **Push** — git network ops on this box need the sandbox disabled + proxy `127.0.0.1:7890`; no `gh` CLI.

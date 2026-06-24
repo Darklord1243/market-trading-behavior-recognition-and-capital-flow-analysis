@@ -7,13 +7,25 @@
 
 | | |
 |---|---|
-| **Version** | **v1.6.5** (2026-06-24) |
+| **Version** | **v1.6.6** (2026-06-24) |
 | **Pipeline entry** | `python main.py --input <xlsx|glob> -o outputs/ [--date YYYYMMDD]` |
 | **Tests** | `pytest tests/` → **141 passing, 2 xfailed** (verified 2026-06-23; … → 131 Track L-c re-eval infra → **141+2xfail Feature B.3 slice 1**; the 2 xfails are the L-c true-latency discriminating tests, dormant) |
 | **Branch at authoring** | `feat/task2-3class-capital-type` |
 | **Canonical source of truth** | brief `docs/AFAC2026_Track1_Project_Brief.docx` (Rev. 7) + `docs/competition-spec/` |
 
 ### Changelog
+- **v1.6.6 (2026-06-24)** — **Track V V.3.3 verify — 20260622 label addendum (read-only; no code change).**
+  Human appended **14 cited 20260622 LHB rows** (游资=4, 量化=4, 散户=6) to
+  `tests/fixtures/validation_labels.csv`; parquet for 20260622 present in `data/202606`. Opus verify (schema +
+  harness): **53/53 keys joined, 0 dropped.** **Active gate** (`parquet:data/202606`): **n=39→53**, weighted_f1
+  **0.6449→0.6689 (+0.0240)**; per-class n=53: 游资 P=0.47 R=0.64 F1=0.55 (sup 14) · 量化 P=0.68 R=0.72
+  F1=0.70 (sup 18) · 散户 P=0.87 R=0.62 F1=0.72 (sup 21). **n=24 continuity {0617,0618} held at 0.6599**
+  (floor, no regression). New-day-only diagnostic (20260622, n=14): F1=0.7190. **Prior gate 0.6449/n=39 retained
+  as reference delta.** Improvement is **pure label-set expansion** — no `rules.py` change; suite 141 passed + 2
+  xfailed. **Disposition (binding):** **0.6689/n=53 is the new ship criterion** for future scored slices; hold
+  n=24 ≥ 0.6599. P3.1/P3.2 deferrals stand — no single-feature / constant slice justified by this F1 lift alone.
+  **Known scorer-hard cases (documented, not chased):** `002008`(0616), `605198`(0616), `000657`(0622) BORDERLINE
+  (conf 0.55). **Residual routing:** continue **Track D** (optional 20260623+ labels; 游资 still weakest at F1≈0.55).
 - **v1.6.5 (2026-06-24)** — **Phase 3 slice P3.2 DEFERRED (no ship; feature probe + n=39 generalization only).**
   Opus ran the mandated feature probe on the `002008`/`605198`/`002354` limit-up triangle (no Sonnet dispatch,
   no gate run). The strongest **new** axis — **buyer-account concentration** (`buyer_top5` / `buyer_hhi`: HHI &
@@ -547,7 +559,9 @@ backtest answers (§3.3 auto-DQ). Validation labels are **post-market public inf
 | Combined 0617+0618 (post–B.2) | 24 | 0.6599 | 5/10 | **n=24 continuity reference** (`trd_size_entropy`; held by B.3b) |
 | L-c true-latency swap (rejected) | 24 | 0.6500 | 4/10 | **FAIL** vs 0.6599 — proxy kept (v1.6.1); not shipped |
 | V.3.2-expanded (pre–B.3b) | 39 | 0.5934 | — | post-V.3.2 gate (adds 15× 0616); 游资 weakest |
-| **V.3.2-expanded (post–B.3b)** | 39 | **0.6449** | **8/15** | **active gate** (B.3 limit-UP de-contamination; 游资 R 0.40→0.60) |
+| V.3.2-expanded (post–B.3b) | 39 | 0.6449 | 8/15 | prior active gate (B.3 limit-UP de-contamination; superseded by V.3.3) |
+| **V.3.3-expanded (post–20260622 addendum)** | **53** | **0.6689** | **≈13/21** | **active gate** (label expansion only; 0 keys dropped) |
+| 20260622-only (diagnostic) | 14 | 0.7190 | — | informational, not ship gate |
 
 **How it feeds H1–H5 acceptance (additive, not a replacement):**
 - Phase 1b, Phase 2, each Phase 3 batch: the PR records the **proxy-F1 before/after** on the seed set *in addition
@@ -728,18 +742,14 @@ on a multi-stock synthetic panel, not the n=1 fixture.
 
 ### Phase 3 — Feature expansion toward the 89-set (snapshot-computable first)
 
-> **Status (v1.6.5): P3.1 ⛔ DEFERRED; P3.2 ⛔ DEFERRED; no single-feature slice next.** P3.1 (per-dim probe on the
-> B.3b limit-up residuals) and P3.2 (new-feature probe) were both scoped by Opus and **deferred — no ship, no code
-> change.** P3.1: 002008 seal branch dead / 605198 branch insufficient / 002354 collateral flip (missing axis, not
-> a threshold). P3.2: the strongest new axis, **buyer-account concentration** (`buyer_top5`/`buyer_hhi` over `deal`
-> `BuyID`), separated the triangle but **failed n=39 generalization** — it is a quant-vs-rest liquidity proxy that
-> conflates 游资 with 散户 (highest value in the set is a 散户), so wiring it to `DIMS_YOUZI` would relocate the
-> collateral failure to the 散户 class. **Root cause: the 游资 class is heterogeneous (n=10, 56× concentration
-> range) and the FNs are sealed limit-up names where genuine cadence/cancel axes collapse.** Active gate held at
-> **0.6449/n=39**. See v1.6.5 changelog. **Disposition (binding): no further constant / single-feature slices on
-> the limit-up 游资 FNs until label/data expansion** — `002008` (genuine 游资, scorer-hard microstructure) and
-> `605198` (borderline, conf 0.50) are **documented known-hard cases, not chased.** **Residual routing → Track D**
-> (more L2 days / 游资 labels to stabilize the class). **Phase 4 GBDT is NOT authorized.**
+> **Status (v1.6.6): P3.1 ⛔ DEFERRED; P3.2 ⛔ DEFERRED; active gate updated via Track D labels.** V.3.3 verify
+> (20260622 addendum) raised the gate **0.6449/n=39 → 0.6689/n=53** with **no code change** — label expansion
+> only; n=24 continuity held at 0.6599. P3.1/P3.2 probes remain decisive: no single-feature / constant slice
+> shipped. P3.2 lesson stands: any future feature must separate 游资 from **both** 量化 **and** 散户 on the **full**
+> labeled set, not the triangle alone. **Active ship criterion: 0.6689/n=53**; hold n=24 ≥ 0.6599. **Known
+> scorer-hard cases (documented, not chased):** `002008`(0616), `605198`(0616), `000657`(0622) BORDERLINE. 游资
+> remains weakest class (F1≈0.55, n=14). **Residual routing → Track D** (optional 20260623+ labels; more 游资
+> support before Phase 3 re-scope). **Phase 4 GBDT is NOT authorized.**
 
 **Goal:** add separable, intraday features. **Files:** `src/features.py`, `tests/test_features.py`,
 `config.py` (any new thresholds as named constants). Add in small, individually-tested commits:
