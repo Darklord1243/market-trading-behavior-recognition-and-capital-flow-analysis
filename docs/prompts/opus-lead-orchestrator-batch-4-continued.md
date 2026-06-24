@@ -1,11 +1,11 @@
-# Opus lead orchestrator — Batch 4 continued (post–P3.2 DEFERRED → V.3.3 ✅ → active gate 0.6689/n=53)
+# Opus lead orchestrator — Batch 4 continued (post–P3.2 DEFERRED → V.3.3 ✅ → active gate 0.6971/n=65)
 
 > **Paste this entire file** into a **new Claude Code Opus** session.
 > **Human team lead:** approve each step with **"proceed to …"** between items.
 > **Operating model:** `docs/prompts/opus-lead-orchestrator-batch-3.md`
 >   (DISPATCH → MONITOR → INSPECT → VERIFY-1 → VERIFY-2 → GATE).
 > **Batch 4 entry prompt:** `docs/prompts/opus-lead-orchestrator-batch-4.md` (V.3.2 / B.3b phases — now DONE; baseline numbers there are stale).
-> **Spec of record:** `docs/LIS.md` **v1.6.6** §6.
+> **Spec of record:** `docs/LIS.md` **v1.6.7** §6.
 > **Map:** `docs/prompts/WORKFLOW.md`
 
 ---
@@ -35,17 +35,19 @@ one Sonnet subagent at a time. Wait for the human **"proceed to …"** before ea
 |------|--------|
 | Branch | `feat/task2-3class-capital-type` |
 | Last shipped feature | `497bbce` feat B.3 limit-up de-contamination |
-| LIS state | v1.6.6 — V.3.3 verify ✅; active gate **0.6689/n=53**; B.3c/P3.1/P3.2 DEFERRED; Track D optional |
-| Recent commits | `f2e8b94` V.3.3 CSV → `2f9ff8d` LIS v1.6.5 → … → `497bbce` feat B.3 |
+| LIS state | v1.6.7 — V.3.3 verify ✅ (20260622+20260623); active gate **0.6971/n=65**; B.3c/P3.1/P3.2 DEFERRED; Track D optional |
+| Recent commits | `b678687` LIS v1.6.6 → V.3.3 20260623 CSV → LIS v1.6.7 → … → `497bbce` feat B.3 |
 
 ### Active gate
 | Set | n | weighted_f1 | Notes |
 |-----|---|-------------|-------|
-| **Active gate** | **53** | **0.6689** | post–V.3.3 20260622 addendum (ship criterion for all future slices) |
-| **Prior reference** | 39 | 0.6449 | post–B.3 slice 1 (delta baseline) |
+| **Active gate** | **65** | **0.6971** | post–V.3.3 20260623 addendum (ship criterion for all future slices) |
+| **Prior reference** | 53 | 0.6689 | post–V.3.3 20260622 addendum (delta baseline) |
+| **Prior reference** | 39 | 0.6449 | post–B.3 slice 1 |
 | **Continuity reference** | 24 {0617,0618} | **0.6599** | must not regress (held at floor) |
 | Test suite | — | **141 passed, 2 xfailed** | L-c discriminating xfails dormant |
-| Per-class n=53 | — | 游资 F1≈0.55 (s14) · 量化 F1≈0.70 (s18) · 散户 F1≈0.72 (s21) | 游资 still weakest |
+| Per-class n=65 | — | 游资 F1≈0.60 (s19) · 量化 F1≈0.74 (s22) · 散户 F1≈0.73 (s24) | 游资 still weakest |
+| 20260623-only (diagnostic) | 12 | 0.8296 | informational |
 | 20260622-only (diagnostic) | 14 | 0.7190 | informational |
 
 **Gate command (every scored slice):**
@@ -68,7 +70,8 @@ For n=24 continuity: pandas-filter labels to {20260617, 20260618} keys — do no
 | B.3c limit-DOWN mirror | ⛔ DEFERRED | `f68527b` — prototype regressed 0.6449→0.5876; `rules.py` unchanged |
 | H.2 docs sync → v1.6.3 | ✅ | README + WORKFLOW prompt pack |
 | P3.1 / P3.2 | ⛔ DEFERRED | v1.6.4 / v1.6.5 — probe-only, no ship |
-| **V.3.3 verify (20260622)** | ✅ | `f2e8b94` — 14 rows; gate 0.6449/n=39 → **0.6689/n=53**; 53/53 joined |
+| **V.3.3 verify (20260622)** | ✅ | `f2e8b94` — 14 rows; gate 0.6449/n=39 → 0.6689/n=53; 53/53 joined |
+| **V.3.3 verify (20260623)** | ✅ | 12 rows; gate 0.6689/n=53 → **0.6971/n=65**; 65/65 joined |
 
 ### B.3c deferral — disposition (read before P3.1 scoping)
 Do **not** re-open B.3c seal logic. Three independent blockers documented in LIS v1.6.3:
@@ -111,7 +114,7 @@ conda run -n base pytest tests/ -q
 PYTHONIOENCODING=utf-8 "C:/Users/ASUS/anaconda3/python.exe" -u scripts/validate_offline.py \
   --labels tests/fixtures/validation_labels.csv --input parquet:data/202606 1>gate.out 2>gate.err
 ```
-Paste summary. If gate ≠ **0.6689/n=53** or suite ≠ 141/2xfail, stop and report delta. Clean up `gate.out`/`gate.err` after.
+Paste summary. If gate ≠ **0.6971/n=65** or suite ≠ 141/2xfail, stop and report delta. Clean up `gate.out`/`gate.err` after.
 
 ---
 
@@ -164,24 +167,27 @@ resolves it.
 | `002008`(0616) | 游资 | genuine 游资 (V.3.3 conf 0.75; microstructure mismatch) |
 | `605198`(0616) | 游资 | BORDERLINE (V.3.3 conf 0.50; 3-day-cumulative + QFII-diluted) |
 | `000657`(0622) | 游资 | BORDERLINE scorer-hard (conf 0.55; 机构专用 on buy confounds) |
+| `000070`(0623) | 游资 | scorer-hard (conf 0.68; sell-side 机构专用 distribution — microstructure may score 量化) |
 
 ---
 
-## V.3.3 — ✅ DONE (20260622 addendum; LIS v1.6.6)
+## V.3.3 — ✅ DONE (20260622 + 20260623 addenda; LIS v1.6.7)
 
-**Result:** 14× 20260622 rows (游资=4, 量化=4, 散户=6). Harness: **53/53 joined, 0 dropped.**
-**Active gate:** n=39→53, F1 **0.6449→0.6689** (+0.0240). n=24 continuity **0.6599 held**. No code change.
-Improvement is **label expansion only** — not justification for a single-feature Sonnet slice.
+**20260622:** 14 rows (游资=4, 量化=4, 散户=6). Harness 53/53 joined. Gate n=39→53, F1 0.6449→0.6689 (+0.0240).
+**20260623:** 12 rows (游资=5, 量化=4, 散户=3). Harness: **65/65 joined, 0 dropped.**
+**Active gate:** n=53→65, F1 **0.6689→0.6971** (+0.0282). n=24 continuity **0.6599 held**. 20260623-only diagnostic
+n=12 F1=**0.8296**; 20260622-only n=14 F1=0.7190 (unchanged). No code change — **label expansion only**, not
+justification for a single-feature Sonnet slice.
 
 ---
 
 ## Next — Track D optional (HUMAN); no Sonnet until full-set probe re-run
 
-**Binding disposition:** **0.6689/n=53** is the ship criterion; hold n=24 ≥ **0.6599**. P3.1/P3.2 deferrals stand.
+**Binding disposition:** **0.6971/n=65** is the ship criterion; hold n=24 ≥ **0.6599**. P3.1/P3.2 deferrals stand.
 
-- **Track D (human, optional)** — append **20260623+** LHB rows; prioritize **游资** (still weakest, F1≈0.55, n=14).
+- **Track D (human, optional)** — append **20260624+** LHB rows; prioritize **游资** (still weakest, F1≈0.60, sup 19).
 - When labels expand: human **"CSV ready"** → Opus verify → update LIS baseline.
-- Before any Sonnet slice: re-run feature probes on the **full n=53+ set** (P3.2 lesson applies).
+- Before any Sonnet slice: re-run feature probes on the **full n=65+ set** (P3.2 lesson applies).
 
 ---
 

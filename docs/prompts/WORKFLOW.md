@@ -1,7 +1,7 @@
 # Execution workflow — how the pieces fit (for the team lead)
 
 > Plain-language map of the Sonnet prompt pack. **Not** a prompt — read this in 5 minutes, then dispatch.
-> Spec of record: `docs/LIS.md` **v1.6.6** §6.
+> Spec of record: `docs/LIS.md` **v1.6.7** §6.
 
 ## Operating model (Opus lead ↔ Sonnet executor)
 
@@ -94,9 +94,13 @@ OPUS           P3.2 new-feature probe (buyer-concentration) → ⛔ DEFERRED (n=
    ↓
 HUMAN          appended 20260622 LHB labels (14 rows) + parquet in data/202606
    ↓
-OPUS           V.3.3 verify (read-only) → active gate 0.6449/n=39 → **0.6689/n=53** (LIS v1.6.6)
+OPUS           V.3.3 verify (read-only) → active gate 0.6449/n=39 → 0.6689/n=53 (LIS v1.6.6)
    ↓
-HUMAN          optional 20260623+ label batches (Track D continues)
+HUMAN          appended 20260623 LHB labels (12 rows) + parquet in data/202606
+   ↓
+OPUS           V.3.3 verify (read-only) → active gate 0.6689/n=53 → **0.6971/n=65** (LIS v1.6.7)
+   ↓
+HUMAN          optional 20260624+ label batches (Track D continues)
 ```
 
 | Order | Owner | Prompt / spec | Status |
@@ -107,13 +111,14 @@ HUMAN          optional 20260623+ label batches (Track D continues)
 | H.2 | Opus | docs sync (this file + README → v1.6.3) | ✅ |
 | P3.1 | Opus | Phase 3 first slice (scorer-moving) — per-dim probe | ⛔ **DEFERRED** (no ship; 3 blockers, LIS v1.6.4) |
 | P3.2 | Opus | Phase 3 new-feature probe — buyer-account concentration | ⛔ **DEFERRED** (n=39 generalization fail; LIS v1.6.5) |
-| V.3.3 | **Human labels → Opus verify** | 20260622 addendum (14 rows) | ✅ (n=53; baseline **0.6689**) |
-| Track D | **Human** | optional 20260623+ LHB labels / more days | 🔜 (游资 still weakest; no Sonnet until probe re-run) |
+| V.3.3 | **Human labels → Opus verify** | 20260622 addendum (14 rows) | ✅ (n=53; baseline 0.6689) |
+| V.3.3 | **Human labels → Opus verify** | 20260623 addendum (12 rows) | ✅ (n=65; baseline **0.6971**) |
+| Track D | **Human** | optional 20260624+ LHB labels / more days | 🔜 (游资 still weakest; no Sonnet until probe re-run) |
 | Orchestrator | Opus | [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) | **active handoff** |
 
-**Active gate (every future scored slice):** weighted_f1 **0.6689 / n=53** on `parquet:data/202606`; hold
-**n=24 {0617,0618} continuity ≥ 0.6599**. Per-class n=53: 游资 F1≈0.55 (weakest, n=14) · 量化 F1≈0.70 · 散户 F1≈0.72.
-Prior reference gate: **0.6449/n=39**. The CSV is **human-only** — Opus/Sonnet never label or "fix" rows.
+**Active gate (every future scored slice):** weighted_f1 **0.6971 / n=65** on `parquet:data/202606`; hold
+**n=24 {0617,0618} continuity ≥ 0.6599**. Per-class n=65: 游资 F1≈0.60 (weakest, sup 19) · 量化 F1≈0.74 · 散户 F1≈0.73.
+Prior reference gates: **0.6689/n=53** (20260622 addendum), **0.6449/n=39**. The CSV is **human-only** — Opus/Sonnet never label or "fix" rows.
 **P3.1/P3.2 deferred (v1.6.5):** no single-feature / constant slice shipped; F1 lift from V.3.3 is label expansion
 only. **Known scorer-hard cases (documented, not chased):** `002008`(0616), `605198`(0616), `000657`(0622) BORDERLINE.
 **Phase 4 GBDT NOT authorized.**
@@ -141,17 +146,17 @@ feature/scoring (Phase 3 or Feature B.1), **not** seal de-contamination.
 
 ## How to run (new session)
 
-**Opus lead (recommended):** paste [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) into a new **Claude Code Opus** chat (current handoff; spec of record LIS v1.6.6 §6). Active gate **0.6689/n=53** (V.3.3 verify ✅); B.3c, P3.1, P3.2 **deferred**. No Sonnet slice until feature probe re-run on expanded set. Optional: human 20260623 labels (Track D). Do not start Phase 4 GBDT.
+**Opus lead (recommended):** paste [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) into a new **Claude Code Opus** chat (current handoff; spec of record LIS v1.6.7 §6). Active gate **0.6971/n=65** (V.3.3 verify ✅); B.3c, P3.1, P3.2 **deferred**. No Sonnet slice until feature probe re-run on expanded set. Optional: human 20260624+ labels (Track D). Do not start Phase 4 GBDT.
 
 **Manual / Sonnet-only:** copy the next Sonnet prompt below → paste into Claude Code **Sonnet** → you verify → commit.
 
 1. Read this file + LIS §4 snapshot.
 2. Open the **next** prompt (batch 4 table) → copy whole file (or let Opus orchestrator read it).
 3. Sonnet implements (TDD); **Opus lead commits** after GATE PASS unless you said otherwise.
-4. **Double-verify** — `pytest tests/ -q`, scope diff, smoke if applicable; for any future scored slice, the **proxy-F1 must beat 0.6689/n=53 and hold n=24 {0617,0618} ≥ 0.6599**.
+4. **Double-verify** — `pytest tests/ -q`, scope diff, smoke if applicable; for any future scored slice, the **proxy-F1 must beat 0.6971/n=65 and hold n=24 {0617,0618} ≥ 0.6599**.
 5. Dispatch **one** next item after your proceed.
 
-**Batch 4 status:** V.3.2 ✅ · B.3b ✅ · B.3c/P3.1/P3.2 **deferred** · **V.3.3 ✅ (0.6689/n=53)** · Track D optional (20260623+) — see [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) and LIS v1.6.6 §6.
+**Batch 4 status:** V.3.2 ✅ · B.3b ✅ · B.3c/P3.1/P3.2 **deferred** · **V.3.3 ✅ (0.6971/n=65)** · Track D optional (20260624+) — see [`opus-lead-orchestrator-batch-4-continued.md`](opus-lead-orchestrator-batch-4-continued.md) and LIS v1.6.7 §6.
 
 ---
 

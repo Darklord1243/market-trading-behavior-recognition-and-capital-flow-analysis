@@ -7,13 +7,27 @@
 
 | | |
 |---|---|
-| **Version** | **v1.6.6** (2026-06-24) |
+| **Version** | **v1.6.7** (2026-06-24) |
 | **Pipeline entry** | `python main.py --input <xlsx|glob> -o outputs/ [--date YYYYMMDD]` |
 | **Tests** | `pytest tests/` → **141 passing, 2 xfailed** (verified 2026-06-23; … → 131 Track L-c re-eval infra → **141+2xfail Feature B.3 slice 1**; the 2 xfails are the L-c true-latency discriminating tests, dormant) |
 | **Branch at authoring** | `feat/task2-3class-capital-type` |
 | **Canonical source of truth** | brief `docs/AFAC2026_Track1_Project_Brief.docx` (Rev. 7) + `docs/competition-spec/` |
 
 ### Changelog
+- **v1.6.7 (2026-06-24)** — **Track V V.3.3 verify — 20260623 label addendum (read-only; no code change).**
+  Human appended **12 cited 20260623 LHB rows** (游资=5, 量化=4, 散户=3) to
+  `tests/fixtures/validation_labels.csv`; parquet for 20260623 staged in `data/202606` (all 5 streams). Opus verify
+  (schema + harness): **65/65 keys joined, 0 dropped.** **Active gate** (`parquet:data/202606`): **n=53→65**,
+  weighted_f1 **0.6689→0.6971 (+0.0282)**; per-class n=65: 游资 P=0.54 R=0.68 F1=0.60 (sup 19) · 量化 P=0.71
+  R=0.77 F1=0.74 (sup 22) · 散户 P=0.88 R=0.62 F1=0.73 (sup 24). **n=24 continuity {0617,0618} held at 0.6599**
+  (floor, no regression). New-day-only diagnostic (20260623, n=12): F1=**0.8296**; 20260622-only diagnostic (n=14):
+  F1=0.7190 (unchanged, sanity). **Prior gate 0.6689/n=53 retained as reference delta.** Improvement is **pure
+  label-set expansion** — no `rules.py` change; suite 141 passed + 2 xfailed. **Disposition (binding):**
+  **0.6971/n=65 is the new ship criterion** for future scored slices; hold n=24 ≥ 0.6599. F1 lift from label
+  expansion alone does **not** authorize Sonnet; P3.1/P3.2 deferrals stand — no single-feature / constant slice
+  justified by this lift. **Known scorer-hard cases (documented, not chased):** `002008`(0616), `605198`(0616),
+  `000657`(0622), `000070`(0623) BORDERLINE. **Residual routing:** 游资 still weakest class (F1≈0.60, sup 19),
+  but improved on both P and F1 vs v1.6.6.
 - **v1.6.6 (2026-06-24)** — **Track V V.3.3 verify — 20260622 label addendum (read-only; no code change).**
   Human appended **14 cited 20260622 LHB rows** (游资=4, 量化=4, 散户=6) to
   `tests/fixtures/validation_labels.csv`; parquet for 20260622 present in `data/202606`. Opus verify (schema +
@@ -560,7 +574,9 @@ backtest answers (§3.3 auto-DQ). Validation labels are **post-market public inf
 | L-c true-latency swap (rejected) | 24 | 0.6500 | 4/10 | **FAIL** vs 0.6599 — proxy kept (v1.6.1); not shipped |
 | V.3.2-expanded (pre–B.3b) | 39 | 0.5934 | — | post-V.3.2 gate (adds 15× 0616); 游资 weakest |
 | V.3.2-expanded (post–B.3b) | 39 | 0.6449 | 8/15 | prior active gate (B.3 limit-UP de-contamination; superseded by V.3.3) |
-| **V.3.3-expanded (post–20260622 addendum)** | **53** | **0.6689** | **≈13/21** | **active gate** (label expansion only; 0 keys dropped) |
+| V.3.3-expanded (post–20260622 addendum) | 53 | 0.6689 | ≈13/21 | prior gate (label expansion only; superseded by 20260623 addendum) |
+| **V.3.3-expanded (post–20260623 addendum)** | **65** | **0.6971** | **≈15/24** | **active gate** (label expansion only; 0 keys dropped) |
+| 20260623-only (diagnostic) | 12 | 0.8296 | — | informational, not ship gate |
 | 20260622-only (diagnostic) | 14 | 0.7190 | — | informational, not ship gate |
 
 **How it feeds H1–H5 acceptance (additive, not a replacement):**
@@ -742,14 +758,14 @@ on a multi-stock synthetic panel, not the n=1 fixture.
 
 ### Phase 3 — Feature expansion toward the 89-set (snapshot-computable first)
 
-> **Status (v1.6.6): P3.1 ⛔ DEFERRED; P3.2 ⛔ DEFERRED; active gate updated via Track D labels.** V.3.3 verify
-> (20260622 addendum) raised the gate **0.6449/n=39 → 0.6689/n=53** with **no code change** — label expansion
+> **Status (v1.6.7): P3.1 ⛔ DEFERRED; P3.2 ⛔ DEFERRED; active gate updated via Track D labels.** V.3.3 verify
+> (20260623 addendum) raised the gate **0.6689/n=53 → 0.6971/n=65** with **no code change** — label expansion
 > only; n=24 continuity held at 0.6599. P3.1/P3.2 probes remain decisive: no single-feature / constant slice
 > shipped. P3.2 lesson stands: any future feature must separate 游资 from **both** 量化 **and** 散户 on the **full**
-> labeled set, not the triangle alone. **Active ship criterion: 0.6689/n=53**; hold n=24 ≥ 0.6599. **Known
-> scorer-hard cases (documented, not chased):** `002008`(0616), `605198`(0616), `000657`(0622) BORDERLINE. 游资
-> remains weakest class (F1≈0.55, n=14). **Residual routing → Track D** (optional 20260623+ labels; more 游资
-> support before Phase 3 re-scope). **Phase 4 GBDT is NOT authorized.**
+> labeled set, not the triangle alone. **Active ship criterion: 0.6971/n=65**; hold n=24 ≥ 0.6599. **Known
+> scorer-hard cases (documented, not chased):** `002008`(0616), `605198`(0616), `000657`(0622), `000070`(0623)
+> BORDERLINE. 游资 remains weakest class (F1≈0.60, sup 19, improved vs v1.6.6). **Residual routing → Track D**
+> (optional 20260624+ labels; more 游资 support before Phase 3 re-scope). **Phase 4 GBDT is NOT authorized.**
 
 **Goal:** add separable, intraday features. **Files:** `src/features.py`, `tests/test_features.py`,
 `config.py` (any new thresholds as named constants). Add in small, individually-tested commits:
