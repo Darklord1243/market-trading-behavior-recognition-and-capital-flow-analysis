@@ -254,3 +254,81 @@ def test_default_range_is_config_k_range():
     assert lo <= selected_k <= hi, (
         f"Default sweep returned K={selected_k} outside config.K_RANGE={config.K_RANGE}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 7 (P5.1a regression): raw-scale EXCLUDE columns must not drive clustering
+# ---------------------------------------------------------------------------
+
+def test_raw_scale_n_ticks_does_not_drive_clustering_or_naming():
+    """EXCLUDE columns (n_ticks at raw scale ~thousands) must not dominate KMeans
+    distance or centroid naming.
+
+    Build a synthetic matrix with two clearly distinct microstructure groups:
+      Group A: high oss_mega_amount_pct / ap_active_buy_pct  (游资-like)
+      Group B: high oss_small_amount_pct / rs_burst_ratio    (量化-like)
+    Then add an n_ticks column with raw-scale values (1000–50000) that is
+    UNCORRELATED with the true groups (shuffled independently).
+
+    Before the fix: n_ticks (~thousands) dominates Euclidean distance →
+      all rows collapse to a single fallback label → test fails.
+    After the fix: n_ticks is dropped before KMeans and before centroid naming →
+      ≥2 distinct pattern_type labels, none with "n_ticks" or "n ticks" in explanation.
+    """
+    rng = np.random.default_rng(7)
+    n = 40  # 40 rows per group
+
+    # Group A: high mega_amount_pct and ap_active_buy_pct (游资-like)
+    grp_a = pd.DataFrame(
+        {
+            "oss_mega_amount_pct": rng.uniform(0.55, 0.85, n),
+            "ap_active_buy_pct": rng.uniform(0.60, 0.90, n),
+            "pi_time_concentration": rng.uniform(0.50, 0.75, n),
+            "oss_small_amount_pct": rng.uniform(0.00, 0.10, n),
+            "rs_burst_ratio": rng.uniform(0.00, 0.10, n),
+            "ap_active_net_direction": rng.uniform(0.30, 0.60, n),
+            "oss_large_amount_pct": rng.uniform(0.20, 0.40, n),
+            "book_imbalance": rng.uniform(0.10, 0.30, n),
+            "obp_big_quote_share": rng.uniform(0.10, 0.30, n),
+        }
+    )
+    # Group B: high oss_small_amount_pct / rs_burst_ratio (量化-like)
+    grp_b = pd.DataFrame(
+        {
+            "oss_mega_amount_pct": rng.uniform(0.00, 0.10, n),
+            "ap_active_buy_pct": rng.uniform(0.10, 0.30, n),
+            "pi_time_concentration": rng.uniform(0.00, 0.15, n),
+            "oss_small_amount_pct": rng.uniform(0.60, 0.90, n),
+            "rs_burst_ratio": rng.uniform(0.55, 0.80, n),
+            "ap_active_net_direction": rng.uniform(-0.10, 0.10, n),
+            "oss_large_amount_pct": rng.uniform(0.00, 0.10, n),
+            "book_imbalance": rng.uniform(-0.10, 0.10, n),
+            "obp_big_quote_share": rng.uniform(0.00, 0.10, n),
+        }
+    )
+
+    df = pd.concat([grp_a, grp_b], ignore_index=True)
+
+    # Add n_ticks at raw scale, UNCORRELATED with group membership (shuffled)
+    n_ticks_raw = rng.integers(1000, 50000, size=len(df)).astype(float)
+    rng.shuffle(n_ticks_raw)  # ensure no accidental correlation
+    df["n_ticks"] = n_ticks_raw
+
+    result = cluster_patterns(df, k_range=(2, 4))
+
+    # 1. At least 2 distinct pattern types — raw n_ticks must NOT collapse naming
+    unique_labels = result["pattern_type"].unique()
+    assert len(unique_labels) >= 2, (
+        f"Expected ≥2 distinct pattern_type labels but got {list(unique_labels)}. "
+        "n_ticks (raw scale ~thousands) is dominating Euclidean distance "
+        "and collapsing all rows to a single fallback. Fix: drop EXCLUDE columns "
+        "before KMeans and centroid naming."
+    )
+
+    # 2. No explanation may mention n_ticks (the EXCLUDE col must be invisible to naming)
+    for idx, row in result.iterrows():
+        expl = row["pattern_explanation"]
+        assert "n_ticks" not in expl and "n ticks" not in expl, (
+            f"Row {idx} explanation mentions EXCLUDE column 'n_ticks': {expl!r}. "
+            "The EXCLUDE column must be dropped before centroid naming."
+        )

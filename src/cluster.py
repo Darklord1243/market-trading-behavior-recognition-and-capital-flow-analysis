@@ -24,7 +24,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import calinski_harabasz_score, silhouette_score
 
 from config import K_RANGE, RANDOM_SEED
-from src.normalize import normalize_matrix
+from src.normalize import normalize_matrix, EXCLUDE
 
 log = logging.getLogger(__name__)
 
@@ -211,7 +211,12 @@ def cluster_patterns(
 
     # --- Rank-normalize (H1 dependency) ---
     normed = normalize_matrix(feats).select_dtypes("number").fillna(0.0)
-    X = normed.values
+
+    # Drop EXCLUDE columns (imported from src.normalize — not hard-coded) so that
+    # raw-scale columns like n_ticks (~thousands) do not dominate Euclidean distance
+    # in KMeans, and do not appear as dominant features in centroid naming.
+    clustering_feats = normed.drop(columns=[c for c in EXCLUDE if c in normed.columns])
+    X = clustering_feats.values
 
     # --- K=1 fast path ---
     if n <= 1:
@@ -226,12 +231,13 @@ def cluster_patterns(
             labels = km.fit_predict(X)
             log.info("KMeans: %d clusters over %d samples", k, n)
 
-    # --- Centroid-driven naming ---
+    # --- Centroid-driven naming (uses clustering_feats, not normed, so EXCLUDE cols
+    #     are invisible to argmax and lexicon matching) ---
     records: list[tuple[int, str, str]] = []
-    col_names = list(normed.columns)
+    col_names = list(clustering_feats.columns)
 
     for cid in np.unique(labels):
-        members = normed.values[labels == cid]
+        members = clustering_feats.values[labels == cid]
         centroid_mean = members.mean(axis=0)
         centroid_dict = {col: float(centroid_mean[i]) for i, col in enumerate(col_names)}
         name, explanation = _centroid_to_name(centroid_dict)
