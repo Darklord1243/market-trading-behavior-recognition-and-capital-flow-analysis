@@ -14,6 +14,8 @@ Audit-contract guarantees (brief §9):
 Usage:
     python main.py --input samples/AFAC2026.xlsx -o outputs/
     python main.py --input "data/*.xlsx" -o outputs/ --date 20260507
+    python main.py --input parquet:data/202606 --universe samples/stock-samples.xlsx \\
+                   --date 20260623 -o outputs/20260623 --pack submit.zip
 """
 
 from __future__ import annotations
@@ -111,21 +113,173 @@ def run(input_glob: str, out_dir: str, cli_date: str | None) -> dict:
             "n_rows": len(predict_df), "cb_available": has_cancel}
 
 
+def run_parquet(
+    root: str,
+    universe_path: str,
+    date: str,
+    out_dir: str,
+    pack_path: str | None = None,
+) -> dict:
+    """Run the full pipeline from the parquet corpus for one date + universe.
+
+    Parameters
+    ----------
+    root          : Parquet corpus root (e.g. ``"data/202606"``).
+    universe_path : Path to xlsx/CSV listing competition universe codes.
+    date          : Trading date ``YYYYMMDD``.
+    out_dir       : Output directory for the two CSVs.
+    pack_path     : Optional zip destination; when given, calls pack_submit_zip.
+
+    Returns
+    -------
+    dict with keys: ``pattern_reco``, ``predict_result``, ``n_rows``,
+    ``n_missing`` (stocks with no parquet data), and optionally ``submit_zip``.
+    """
+    from src.pipeline_parquet import build_feature_matrix_for_panel, load_universe_codes
+    from src.submit_pack import pack_submit_zip
+
+    set_seeds()
+
+    log.info("[parquet 1/5] load universe: %s", universe_path)
+    stock_codes = load_universe_codes(universe_path)
+    log.info("[parquet 1/5] universe = %d codes", len(stock_codes))
+
+    log.info("[parquet 2/5] build feature matrix — root=%s date=%s", root, date)
+    matrix = build_feature_matrix_for_panel(root, date, stock_codes)
+    if matrix.empty:
+        log.error("[parquet] empty feature matrix — no output produced")
+        return {"pattern_reco": None, "predict_result": None, "n_rows": 0,
+                "n_missing": len(stock_codes)}
+
+    present_codes: set[str] = set(matrix.index.get_level_values("stock_code"))
+    n_missing = len([c for c in stock_codes if c not in present_codes])
+    if n_missing:
+        log.warning("[parquet] %d/%d universe codes had no parquet data (omitted)",
+                    n_missing, len(stock_codes))
+
+    log.info("[parquet 3/5] Task-1 pattern clustering")
+    patterns = cluster.cluster_patterns(matrix)
+
+    log.info("[parquet 4/5] Task-2 weak labels + Stage-3 head (stub)")
+    weak = label.weak_label_matrix(matrix)
+    final = model.apply_model(matrix, weak)
+
+    log.info("[parquet 5/5] assemble + validate + write (date pin=%s)", date)
+    predict_df = postprocess.assemble_predict(final)
+    pattern_df = postprocess.assemble_pattern(patterns)
+    p2 = postprocess.write_predict_result(predict_df, out_dir, expected_date=date)
+    p1 = postprocess.write_pattern_reco(pattern_df, out_dir, expected_date=date)
+
+    log.info("parquet done. n_rows=%d capital_type=%s intent=%s",
+             len(predict_df),
+             predict_df["capital_type"].value_counts().to_dict(),
+             predict_df["capital_intention"].value_counts().to_dict())
+
+    result: dict = {
+        "pattern_reco": p1,
+        "predict_result": p2,
+        "n_rows": len(predict_df),
+        "n_missing": n_missing,
+    }
+
+    if pack_path:
+        log.info("[parquet] packaging submit.zip → %s", pack_path)
+        zip_abs = pack_submit_zip(out_dir, pack_path)
+        result["submit_zip"] = zip_abs
+        log.info("[parquet] submit.zip created: %s", zip_abs)
+
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="AFAC2026 Track-1 pipeline")
-    parser.add_argument("--input", default="samples/AFAC2026.xlsx",
-                        help="raw L2 xlsx path or glob (relative)")
-    parser.add_argument("-o", "--output", default="outputs/",
-                        help="output directory (relative)")
-    parser.add_argument("--date", default=None,
-                        help="expected transaction_date YYYYMMDD; default = data's date / yesterday")
+    parser = argparse.ArgumentParser(
+        description="AFAC2026 Track-1 pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # xlsx path (backward-compatible):
+  python main.py --input samples/AFAC2026.xlsx -o outputs/
+
+  # parquet corpus (competition submission):
+  python main.py --input parquet:data/202606 \\
+                 --universe samples/stock-samples.xlsx \\
+                 --date 20260623 \\
+                 -o outputs/20260623 \\
+                 --pack submit.zip
+""",
+    )
+    parser.add_argument(
+        "--input",
+        default="samples/AFAC2026.xlsx",
+        help=(
+            'Raw L2 input. Either an xlsx path/glob (default) or '
+            '"parquet:<root>" to read the parquet corpus (e.g. "parquet:data/202606"). '
+            'Bare "parquet" defaults root to data/202606.'
+        ),
+    )
+    parser.add_argument(
+        "--universe",
+        default=None,
+        help=(
+            "Path to xlsx/CSV listing competition universe codes "
+            "(col 股票代码 or stock_code). "
+            "Required (or defaults to samples/stock-samples.xlsx) when --input is parquet."
+        ),
+    )
+    parser.add_argument(
+        "-o", "--output",
+        default="outputs/",
+        help="Output directory (relative). Default: outputs/",
+    )
+    parser.add_argument(
+        "--date",
+        default=None,
+        help=(
+            "Expected transaction_date YYYYMMDD. "
+            "Required when --input is parquet. "
+            "Default for xlsx: inferred from data / yesterday."
+        ),
+    )
+    parser.add_argument(
+        "--pack",
+        default=None,
+        metavar="ZIP_PATH",
+        help=(
+            "If given, package the two output CSVs into a submit.zip at this path "
+            "(both files at archive root, no nested folders). "
+            "Only valid with --input parquet."
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    result = run(args.input, args.output, args.date)
+
+    inp = args.input.strip()
+
+    if inp.lower().startswith("parquet"):
+        # Parquet path
+        if ":" in inp:
+            root = inp.split(":", 1)[1].strip() or "data/202606"
+        else:
+            root = "data/202606"
+
+        universe = args.universe or "samples/stock-samples.xlsx"
+        date = args.date
+        if not date:
+            # Fall back to nightly yesterday
+            date = previous_trading_day(_dt.date.today())
+            log.warning("--date not supplied; using yesterday=%s", date)
+
+        result = run_parquet(root, universe, date, args.output, pack_path=args.pack)
+    else:
+        # xlsx / glob path (original path — backward compatible)
+        if args.pack:
+            log.warning("--pack is only used with parquet input; ignoring for xlsx path")
+        result = run(inp, args.output, args.date)
+
     log.info("outputs: %s", result)
     return 0
 
