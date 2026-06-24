@@ -1,0 +1,256 @@
+"""Tests for src/cluster.py — bounded-K sweep + centroid-driven naming (Phase 5 P5.1).
+
+All tests use synthetic matrices with seeded numpy. A stub that always returns K=1 or
+always the default name must FAIL these tests (they are discriminating).
+
+Synthetic matrix columns use real feature names so the naming function has something
+to read when computing centroid-driven labels.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+from sklearn.metrics import silhouette_score
+
+import config
+from src.cluster import cluster_patterns, _sweep_k
+
+
+# ---------------------------------------------------------------------------
+# Helper — build well-separated synthetic blobs with real-ish column names
+# ---------------------------------------------------------------------------
+
+FEATURE_COLS = [
+    "oss_mega_amount_pct",
+    "oss_large_amount_pct",
+    "oss_small_amount_pct",
+    "ap_active_buy_pct",
+    "ap_active_net_direction",
+    "pi_time_concentration",
+    "rs_burst_ratio",
+    "book_imbalance",
+    "obp_big_quote_share",
+]
+
+
+def _make_blobs(n_per_cluster: int, n_clusters: int, rng: np.random.Generator) -> pd.DataFrame:
+    """Create well-separated blobs; each cluster centroid is far from others."""
+    rows = []
+    for cid in range(n_clusters):
+        # Each cluster centroid shifts in all dims by (cid * 3) so they're far apart
+        centre = np.zeros(len(FEATURE_COLS))
+        centre[cid % len(FEATURE_COLS)] = cid * 3.0 + 2.0
+        blob = rng.normal(loc=centre, scale=0.2, size=(n_per_cluster, len(FEATURE_COLS)))
+        rows.append(blob)
+    data = np.vstack(rows)
+    # Clip to valid probability ranges where features are proportions
+    data = np.clip(data, 0.0, 1.0)
+    return pd.DataFrame(data, columns=FEATURE_COLS)
+
+
+# ---------------------------------------------------------------------------
+# Test 1: planted-K recovery
+# ---------------------------------------------------------------------------
+
+def test_ksweep_recovers_planted_k():
+    """Sweep inside k_range=(2,6) recovers the planted K=4 from well-separated blobs.
+
+    A fixed-K stub (K=8 or K=DEFAULT_K) would return a different K, failing this test.
+    """
+    rng = np.random.default_rng(0)
+    planted_k = 4
+    df = _make_blobs(n_per_cluster=30, n_clusters=planted_k, rng=rng)
+    selected_k = _sweep_k(df.values, k_range=(2, 6))
+    assert selected_k == planted_k, (
+        f"Expected K={planted_k}, got K={selected_k}. "
+        "If the sweep is a stub returning a fixed K, this will fail."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 2: selected K silhouette > fixed K=8 silhouette
+# ---------------------------------------------------------------------------
+
+def _make_rank_separated_blobs(
+    n_per_cluster: int, n_clusters: int, rng: np.random.Generator
+) -> pd.DataFrame:
+    """Build blobs that remain well-separated after rank-normalization.
+
+    Each cluster occupies a distinct, non-overlapping rank band: cluster 0 gets
+    the lowest values, cluster 1 slightly higher, etc. This guarantees that even
+    after cross-sectional rank-normalization the within-cluster coherence is high
+    and between-cluster distance remains large.
+    """
+    n_feat = len(FEATURE_COLS)
+    rows = []
+    # Spread cluster centres from 0.05 to 0.95 in 0/1 range, with tight std
+    centres = np.linspace(0.05, 0.95, n_clusters)
+    for centre in centres:
+        blob = rng.normal(loc=centre, scale=0.015, size=(n_per_cluster, n_feat))
+        blob = np.clip(blob, 0.0, 1.0)
+        rows.append(blob)
+    data = np.vstack(rows)
+    return pd.DataFrame(data, columns=FEATURE_COLS)
+
+
+def test_selected_k_beats_fixed_k8_silhouette():
+    """Silhouette at the selected K must be strictly higher than at fixed K=8.
+
+    Plant 3 well-separated blobs. After rank-normalization the 3-cluster
+    structure should score better silhouette than forcing K=8 (which over-splits).
+    Both the sweep and the comparison use the same rank-normalized values.
+    """
+    from sklearn.cluster import KMeans
+    from src.normalize import normalize_matrix
+
+    rng = np.random.default_rng(99)
+    planted_k = 3
+    df = _make_rank_separated_blobs(n_per_cluster=40, n_clusters=planted_k, rng=rng)
+
+    # Rank-normalize — _sweep_k and comparison both use the same data
+    norm_vals = normalize_matrix(df).select_dtypes("number").fillna(0.0).values
+
+    # Sweep range (2,8) — selected K should be 3, clearly beating K=8
+    selected_k = _sweep_k(norm_vals, k_range=(2, 8))
+
+    km_selected = KMeans(n_clusters=selected_k, random_state=42, n_init=10)
+    sil_selected = silhouette_score(norm_vals, km_selected.fit_predict(norm_vals))
+
+    km_fixed8 = KMeans(n_clusters=8, random_state=42, n_init=10)
+    sil_fixed8 = silhouette_score(norm_vals, km_fixed8.fit_predict(norm_vals))
+
+    assert selected_k != 8, (
+        f"Sweep should not select K=8 when only 3 clusters exist; got K={selected_k}"
+    )
+    assert sil_selected > sil_fixed8, (
+        f"Selected K={selected_k} silhouette={sil_selected:.4f} must beat "
+        f"fixed K=8 silhouette={sil_fixed8:.4f}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 3: naming is centroid-driven — two distinct clusters get distinct labels
+# ---------------------------------------------------------------------------
+
+def test_naming_is_centroid_driven():
+    """Two clusters with different dominant features get distinct pattern_type labels.
+
+    Build a matrix with exactly 2 clearly separated groups — one high in
+    oss_mega_amount_pct/ap_active_buy_pct (游资-like) and one high in
+    oss_small_amount_pct/rs_burst_ratio (量化-like). If naming is always the
+    fallback, both get the same label and this fails.
+    """
+    rng = np.random.default_rng(2)
+    n = 30
+
+    # Group A: high mega_amount_pct and ap_active_buy_pct
+    grp_a = pd.DataFrame(
+        {
+            "oss_mega_amount_pct": rng.uniform(0.3, 0.5, n),
+            "ap_active_buy_pct": rng.uniform(0.6, 0.9, n),
+            "pi_time_concentration": rng.uniform(0.4, 0.6, n),
+            "oss_small_amount_pct": rng.uniform(0.0, 0.1, n),
+            "rs_burst_ratio": rng.uniform(0.0, 0.1, n),
+            "ap_active_net_direction": rng.uniform(0.0, 0.05, n),
+            "oss_large_amount_pct": rng.uniform(0.1, 0.2, n),
+            "book_imbalance": rng.uniform(0.0, 0.05, n),
+            "obp_big_quote_share": rng.uniform(0.0, 0.1, n),
+        }
+    )
+    # Group B: high oss_small_amount_pct and rs_burst_ratio
+    grp_b = pd.DataFrame(
+        {
+            "oss_mega_amount_pct": rng.uniform(0.0, 0.05, n),
+            "ap_active_buy_pct": rng.uniform(0.2, 0.4, n),
+            "pi_time_concentration": rng.uniform(0.0, 0.1, n),
+            "oss_small_amount_pct": rng.uniform(0.5, 0.8, n),
+            "rs_burst_ratio": rng.uniform(0.3, 0.5, n),
+            "ap_active_net_direction": rng.uniform(-0.05, 0.05, n),
+            "oss_large_amount_pct": rng.uniform(0.0, 0.05, n),
+            "book_imbalance": rng.uniform(-0.05, 0.05, n),
+            "obp_big_quote_share": rng.uniform(0.0, 0.1, n),
+        }
+    )
+    df = pd.concat([grp_a, grp_b], ignore_index=True)
+    result = cluster_patterns(df, k_range=(2, 4))
+
+    unique_labels = result["pattern_type"].unique()
+    assert len(unique_labels) >= 2, (
+        f"Expected at least 2 distinct pattern_type labels, got {list(unique_labels)}. "
+        "Centroid-driven naming should yield different labels for very different clusters."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 4: every row gets a non-empty explanation ≤ 200 chars, index matches
+# ---------------------------------------------------------------------------
+
+def test_every_row_gets_explanation():
+    """All rows have non-null pattern_explanation ≤ 200 chars; index matches input."""
+    rng = np.random.default_rng(3)
+    df = _make_blobs(n_per_cluster=15, n_clusters=3, rng=rng)
+    df.index = pd.RangeIndex(start=100, stop=100 + len(df))  # non-default index
+
+    result = cluster_patterns(df, k_range=(2, 5))
+
+    assert list(result.index) == list(df.index), "Output index must match input index"
+    assert "pattern_type" in result.columns
+    assert "pattern_explanation" in result.columns
+
+    for idx, row in result.iterrows():
+        assert row["pattern_explanation"] and len(row["pattern_explanation"]) > 0, (
+            f"Row {idx} has empty pattern_explanation"
+        )
+        assert len(row["pattern_explanation"]) <= 200, (
+            f"Row {idx} explanation too long: {len(row['pattern_explanation'])} chars"
+        )
+        assert row["pattern_type"] and len(row["pattern_type"]) > 0, (
+            f"Row {idx} has empty pattern_type"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 5: K=1 graceful on single row
+# ---------------------------------------------------------------------------
+
+def test_k1_graceful_on_single_row():
+    """n==1 matrix: K=1 path, no exception, non-empty label, correct shape."""
+    df = pd.DataFrame(
+        {
+            "oss_mega_amount_pct": [0.2],
+            "ap_active_buy_pct": [0.6],
+            "pi_time_concentration": [0.3],
+        },
+        index=[42],
+    )
+    result = cluster_patterns(df)  # default k_range — must degrade gracefully
+    assert len(result) == 1
+    assert result.index[0] == 42
+    assert result["pattern_type"].iloc[0] and len(result["pattern_type"].iloc[0]) > 0
+    assert result["pattern_explanation"].iloc[0] and len(result["pattern_explanation"].iloc[0]) > 0
+    assert len(result["pattern_explanation"].iloc[0]) <= 200
+
+
+# ---------------------------------------------------------------------------
+# Test 6: default k_range == config.K_RANGE
+# ---------------------------------------------------------------------------
+
+def test_default_range_is_config_k_range():
+    """_sweep_k called without k_range uses config.K_RANGE.
+
+    Build a matrix large enough to support the upper bound of K_RANGE,
+    then confirm _sweep_k() (no k_range arg) returns a value within config.K_RANGE.
+    """
+    rng = np.random.default_rng(4)
+    # Need at least K_RANGE[1] + 1 samples to support the full sweep
+    n_per = 20
+    n_clusters = config.K_RANGE[1]  # = 12
+    df = _make_blobs(n_per_cluster=n_per, n_clusters=n_clusters, rng=rng)
+
+    selected_k = _sweep_k(df.values)  # no k_range — should use config.K_RANGE
+    lo, hi = config.K_RANGE
+    assert lo <= selected_k <= hi, (
+        f"Default sweep returned K={selected_k} outside config.K_RANGE={config.K_RANGE}"
+    )
