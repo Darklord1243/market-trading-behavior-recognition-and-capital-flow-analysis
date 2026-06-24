@@ -62,3 +62,6 @@ Thumbs.db
 *.log
 logs/
 submission_log*.csv
+
+# --- Session scratch (diagnostics; not shipped) ---
+scripts/_*

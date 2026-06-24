@@ -16,7 +16,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from config import OSS_THRESHOLDS
+from config import CB_FAST_CANCEL_MS, OSS_THRESHOLDS, RS_BURST_THRESHOLD_MS, TRD_SIZE_BINS
 from src.ingest import parse_book_json
 
 log = logging.getLogger(__name__)
@@ -101,18 +101,40 @@ def _pi_features(group: pd.DataFrame) -> dict:
 
 
 def _rs_features(group: pd.DataFrame) -> dict:
-    """Rhythm/Sequence: inter-tick interval coefficient of variation + burst ratio."""
-    # interval diffs are timezone-invariant; use the UTC stamp for clarity.
-    ts = group["datetime_utc"].astype("int64") // 1_000_000  # ms
-    intervals = ts.diff().dropna()
-    intervals = intervals[intervals >= 0]
-    if len(intervals) < 2:
-        return {"rs_interval_cv": 0.0, "rs_burst_ratio": 0.0}
-    mean = intervals.mean()
-    cv = _safe_div(float(intervals.std(ddof=0)), float(mean))
-    # burst ratio: share of intervals far below the mean (rapid-fire submissions)
-    burst = _safe_div(int((intervals < 0.25 * mean).sum()), len(intervals))
-    return {"rs_interval_cv": cv, "rs_burst_ratio": burst}
+    """Rhythm/Sequence: inter-tick interval CV, burst ratio, split similarity.
+
+    Resolution-robust: uses .diff().dt.total_seconds() * 1000 so the result
+    is the same regardless of whether datetime_utc is datetime64[ns] (pandas
+    2.2.x) or datetime64[ms] (pandas 3.0.x).  The old astype("int64")//1_000_000
+    path assumed nanosecond resolution and over-divided on ms-dtype timestamps
+    (every 30 s gap collapsed to 0 ms → cv=13.48, burst=0.99).
+
+    Burst definition: share of intervals strictly < RS_BURST_THRESHOLD_MS (100 ms
+    by default).  Absolute threshold avoids the saturation problem of the old
+    0.25*mean definition (which equals 1.0 whenever mean≈0).
+    """
+    # dtype-portable millisecond intervals
+    intervals_ms = (
+        group["datetime_utc"].diff().dropna().dt.total_seconds() * 1000.0
+    )
+    intervals_ms = intervals_ms[intervals_ms >= 0]
+    if len(intervals_ms) < 2:
+        return {
+            "rs_interval_cv": 0.0,
+            "rs_burst_ratio": 0.0,
+            "rs_split_similarity": 0.0,
+        }
+    mean_ms = float(intervals_ms.mean())
+    cv = _safe_div(float(intervals_ms.std(ddof=0)), mean_ms)
+    # burst: absolute threshold (baseline ref: < 100 ms)
+    burst = float((intervals_ms < RS_BURST_THRESHOLD_MS).sum()) / len(intervals_ms)
+    # split similarity: max(0, 1 - cv) — higher when cadence is uniform (iceberg split proxy)
+    split_sim = max(0.0, 1.0 - cv)
+    return {
+        "rs_interval_cv": cv,
+        "rs_burst_ratio": burst,
+        "rs_split_similarity": split_sim,
+    }
 
 
 def _obp_features(group: pd.DataFrame) -> dict:
@@ -154,25 +176,208 @@ def _pd_features(group: pd.DataFrame) -> dict:
     return {"pd_max_price_impact_pct": max_impact}
 
 
-def _cb_features(group: pd.DataFrame, has_cancel_table: bool) -> dict:
-    """Cancel-Behaviour. Snapshot-only -> zero-valued, flagged (graceful degrade)."""
+def _trd_size_entropy(volumes) -> float:
+    """Normalized Shannon entropy of genuine-trade print SIZES over the log-spaced
+    ``TRD_SIZE_BINS`` ladder, in [0, 1].
+
+    Measures size-VALUE heterogeneity (spec §B.2): 散户 = many distinct human sizes
+    (HIGH); 量化 = a few repeated algo clip sizes (LOW); 游资 = mega-skewed (low).
+    The denominator is ``ln(total_bins)`` FIXED — NOT ``ln(non-empty bins)`` — so a
+    2-clip distribution stays low (it would be 1.0 under non-empty normalisation).
+    Empty / single-print / degenerate input -> 0.0.
+    """
+    if volumes is None:
+        return 0.0
+    v = np.asarray(list(volumes), dtype=float)
+    v = v[np.isfinite(v) & (v > 0.0)]
+    if v.size < 2:
+        return 0.0
+    n_bins = len(TRD_SIZE_BINS) + 1
+    idx = np.digitize(v, TRD_SIZE_BINS)                  # 0 .. n_bins-1
+    counts = np.bincount(idx, minlength=n_bins).astype(float)
+    p = counts[counts > 0]
+    p = p / p.sum()
+    h = float(-(p * np.log(p)).sum())
+    denom = np.log(n_bins)
+    return 0.0 if denom <= 0 else float(min(1.0, max(0.0, h / denom)))
+
+
+def _trd_size_entropy_features(volumes) -> dict:
+    """Wrapper mirroring the ``_x_features`` family."""
+    return {"trd_size_entropy": _trd_size_entropy(volumes)}
+
+
+def _limit_seal_features(group: pd.DataFrame) -> dict:
+    """Intraday limit-seal detector (Feature B.3).
+
+    Computes the fraction of ticks whose price is within tick_eps of the day's
+    extreme (max for limit-up, min for limit-down).
+
+        limit_seal_up_ratio   = mean(price >= day_high - tick_eps)
+        limit_seal_down_ratio = mean(price <= day_low  + tick_eps)
+
+    Price-scale note: ``group["price"]`` is always in yuan-float units when it
+    reaches this function.  The parquet L2 corpus stores raw prices as ×100
+    integers, but ``ingest_parquet._normalise_and_clean`` divides by 100.0
+    (line ~218: ``df["price"] = pd.to_numeric(df["Price"]) / 100.0``), so the
+    column contains values like 12.34 (yuan).  The snapshot/xlsx ingest also
+    delivers yuan-float prices.
+    ``tick_eps=0.01`` = 1 fen = the minimum A-share tick increment, which is the
+    correct granularity: it admits ticks within one minimum move of the extreme
+    (e.g., a sealed stock printing at or 1 fen below the limit) while excluding
+    ticks further away.
+
+    Graceful degradation:
+        If the group's ``price`` column is missing, empty, or contains no
+        finite values, **both keys are omitted entirely** (not emitted as 0.0).
+        An absent key votes NEUTRAL (+0.5) via the existing absent-dim
+        convention in ``rules._class_score`` (line 104-106), which is the
+        correct behaviour: no price series → no regime information.
+
+    Returns
+    -------
+    dict
+        Contains ``limit_seal_up_ratio`` and/or ``limit_seal_down_ratio`` as
+        raw [0, 1] floats when a usable price series is present; empty dict
+        otherwise.  Both keys are always emitted together or not at all.
+    """
+    if "price" not in group.columns:
+        return {}
+    price = group["price"]
+    # Filter to finite values only
+    p_numeric = pd.to_numeric(price, errors="coerce")
+    p_finite = p_numeric.dropna()
+    p_finite = p_finite[np.isfinite(p_finite)]
+    if len(p_finite) == 0:
+        return {}
+    p = p_finite.astype(float)
+    tick_eps = 0.01
+    day_high = float(p.max())
+    day_low = float(p.min())
+    seal_up_ratio = float((p >= day_high - tick_eps).mean())
+    seal_down_ratio = float((p <= day_low + tick_eps).mean())
+    return {
+        "limit_seal_up_ratio": seal_up_ratio,
+        "limit_seal_down_ratio": seal_down_ratio,
+    }
+
+
+def _cb_features(
+    group: pd.DataFrame,
+    has_cancel_table: bool,
+    cancel_df: "pd.DataFrame | None" = None,
+) -> dict:
+    """Cancel-Behaviour features.
+
+    Snapshot-only path (has_cancel_table=False):
+        All CB values → 0.0, cb_available → 0.0.  CB dims vote NEUTRAL in rules.
+
+    Local-CSV / parquet path (has_cancel_table=True, cancel_df provided):
+        Computes 5 CB ratios from the cancel event frame.  All outputs are finite
+        floats in [0,1].
+
+    Fast-cancel proxy note (Track L-c re-eval disposition)
+    -------------------------------------------------------
+    ``cb_fast_cancel_ratio`` is the share of **consecutive cancel pairs** whose
+    inter-cancel interval (``cancel_time`` HHMMSSmmm integer diff, proxying ms at
+    this resolution) is < CB_FAST_CANCEL_MS.  This is an **inter-cancel interval
+    proxy**, NOT true order→cancel latency.
+
+    Track L-c re-eval on n=24 parquet:data/202606 gate:
+    - True sub-CB_FAST_CANCEL_MS latency = 0.64% of cancels (vanishingly rare)
+    - Inter-cancel proxy fast rate = 86.8% (carries meaningful class signal)
+    - Swapping to true latency: gate regressed 0.6599 → 0.6500 (FAIL, < 0.6599)
+    - Disposition: inter-cancel proxy KEPT per LIS §6 Track L gate rule.
+
+    The parquet and local paths both emit per-cancel ``latency_ms`` (OrderID
+    self-join / ref-column join), available for a future re-thresholded or
+    latency-distribution feature.  ``latency_ms`` is intentionally NOT consumed
+    here per the gate disposition.  See tests/test_features.py Lc.1/Lc.4 for the
+    discriminating tests (marked xfail, will pass when/if re-enabled).
+    """
     if not has_cancel_table:
         out = {k: 0.0 for k in CB_KEYS}
         out["cb_available"] = 0.0
         return out
-    # Seam for the real tick-cancel computation once a cancel table is wired in.
-    # TODO(cancel-table): compute fast-cancel ratio, buy/sell cancel divergence,
-    # cancel-interval CV from the tick-cancellation stream.
+
     out = {k: 0.0 for k in CB_KEYS}
     out["cb_available"] = 1.0
+
+    # No cancel data available → return zero values with flag=1.0
+    if cancel_df is None or len(cancel_df) == 0:
+        return out
+
+    n_cancel = len(cancel_df)
+
+    # --- cb_cancel_order_ratio ---
+    # cancel count / (cancel count + trade count)
+    n_trades = len(group)
+    out["cb_cancel_order_ratio"] = _safe_div(n_cancel, n_cancel + n_trades)
+
+    # --- cb_cancel_volume_ratio ---
+    # sum(cancel_qty) / (sum(cancel_qty) + sum(trade tick_volume))
+    cancel_qty_col = "cancel_qty" if "cancel_qty" in cancel_df.columns else None
+    cancel_vol = float(cancel_df[cancel_qty_col].sum()) if cancel_qty_col else 0.0
+    trade_vol = float(group["tick_volume"].sum()) if "tick_volume" in group.columns else 0.0
+    out["cb_cancel_volume_ratio"] = _safe_div(cancel_vol, cancel_vol + trade_vol)
+
+    # --- cb_buy_cancel_ratio / cb_sell_cancel_ratio ---
+    if "side" in cancel_df.columns:
+        side = cancel_df["side"].astype(str).str.strip().str.upper()
+        # Accept 'B'/'BUY' for buy, 'S'/'SELL' for sell
+        buy_mask = side.str.startswith("B")
+        sell_mask = side.str.startswith("S")
+        out["cb_buy_cancel_ratio"] = _safe_div(int(buy_mask.sum()), n_cancel)
+        out["cb_sell_cancel_ratio"] = _safe_div(int(sell_mask.sum()), n_cancel)
+
+    # --- cb_fast_cancel_ratio ---
+    # Inter-cancel interval proxy: share of consecutive cancel pairs with
+    # cancel_time difference < CB_FAST_CANCEL_MS.
+    # cancel_time is a HHMMSSmmm integer; consecutive differences proxy ms intervals
+    # at the sub-second resolution used in A-share tick data.
+    #
+    # Track L-c re-eval note: the parquet and local cancel frames both carry a
+    # true per-cancel ``latency_ms`` (OrderID self-join / ref-column join), but
+    # swapping it in here REGRESSED the gate (0.6599 → 0.6500 on n=24 parquet)
+    # because true sub-CB_FAST_CANCEL_MS latency is vanishingly rare (0.64% of
+    # cancels), while the inter-cancel-burstiness proxy (~86.8% fast) carries
+    # stronger class signal. Proxy kept per the Track L-c gate disposition;
+    # ``latency_ms`` stays available (ingest_parquet / ingest_local both compute
+    # it) for a future re-thresholded latency-distribution feature.
+    time_col = "cancel_time" if "cancel_time" in cancel_df.columns else (
+        "time_int" if "time_int" in cancel_df.columns else None
+    )
+    if time_col is not None and n_cancel >= 2:
+        times = pd.to_numeric(cancel_df[time_col], errors="coerce").dropna().sort_values()
+        intervals = times.diff().dropna()
+        intervals = intervals[intervals >= 0]
+        if len(intervals) > 0:
+            fast = int((intervals < CB_FAST_CANCEL_MS).sum())
+            out["cb_fast_cancel_ratio"] = _safe_div(fast, len(intervals))
+
     return out
 
 
-def compute_daily_features(group: pd.DataFrame, has_cancel_table: bool = False) -> dict:
+def compute_daily_features(
+    group: pd.DataFrame,
+    has_cancel_table: bool = False,
+    cancel_df: "pd.DataFrame | None" = None,
+    deal_volumes=None,                      # NEW: per-print genuine-trade sizes (B.2)
+) -> dict:
     """Compute the full per-(stock, day) feature vector for one tick group.
 
     `group` is the rows of a single (stock_code, transaction_date), already cleaned,
     sorted, and carrying tick_* increment columns (see ingest._normalise_and_clean).
+
+    `cancel_df` is the per-(stock, day) cancel event frame produced by
+    ``ingest_local.read_cancel_frame``.  When provided and ``has_cancel_table=True``,
+    real CB feature values are computed.  When ``None`` (the default), CB values are
+    0.0 (backward-compatible: snapshot/xlsx path is unaffected).
+
+    `deal_volumes` is the list of genuine-trade print sizes (shares) for this
+    (stock, day), produced by ``ingest_parquet.read_deal_sizes_parquet`` and threaded
+    through ``aggregate.build_feature_matrix``.  When ``None`` (default — snapshot/
+    xlsx path), ``trd_size_entropy`` is 0.0 (backward-compatible).
     """
     feat: dict[str, float] = {}
     tick_vol = group["tick_volume"]
@@ -184,7 +389,8 @@ def compute_daily_features(group: pd.DataFrame, has_cancel_table: bool = False) 
     feat.update(_rs_features(group))
     feat.update(_obp_features(group))
     feat.update(_pd_features(group))
-    feat.update(_cb_features(group, has_cancel_table))
+    feat.update(_cb_features(group, has_cancel_table, cancel_df=cancel_df))
+    feat.update(_trd_size_entropy_features(deal_volumes))    # NEW (B.2)
 
     # big-order share (directly available field, summed over ticks)
     if "tick_bigordervolume" in group.columns:
@@ -195,6 +401,15 @@ def compute_daily_features(group: pd.DataFrame, has_cancel_table: bool = False) 
         feat["bigorder_volume_pct"] = 0.0
 
     feat["n_ticks"] = float(len(group))
-    # scrub any inf/nan that slipped through
-    return {k: (0.0 if (v is None or not np.isfinite(v)) else float(v))
-            for k, v in feat.items()}
+    # scrub any inf/nan that slipped through (standard features only)
+    result = {k: (0.0 if (v is None or not np.isfinite(v)) else float(v))
+              for k, v in feat.items()}
+
+    # NEW (B.3): limit-seal ratios — added AFTER the scrubber so that graceful
+    # degradation (absent key) is preserved.  An absent key votes NEUTRAL in
+    # rules._class_score; emitting 0.0 would falsely suppress the seal signal.
+    # The dict is empty when no usable price series exists (snapshot/no-price path).
+    seal_feats = _limit_seal_features(group)
+    result.update(seal_feats)
+
+    return result

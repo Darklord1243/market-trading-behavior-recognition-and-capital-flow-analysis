@@ -6,18 +6,18 @@ Three-class rule-based discrimination grounded in A-share financial priors:
   * 量化 (quant): small/frequent/balanced orders, machine cadence — LOW
     inter-event interval CV, HIGH burst ratio, high fast-cancel when a cancel
     table is present. Regular, dense, symmetric.
-  * 散户 (retail): a guarded RESIDUAL — small orders but LOW order frequency,
-    HIGH/irregular interval CV (no cadence), LOW unilateral aggression, diffuse
-    timing (no open/close concentration), near-zero burst structure.
-
-IMPORTANT — the 量化/散户 split is RHYTHM-based, not SIZE-based. Both are
-small-order classes; what separates them is execution regularity/persistence
-(量化 = machine cadence, 散户 = no cadence). Do not "fix" this back to order size.
+  * 散户 (retail): diffuse order flow — many small orders by COUNT (not amount),
+    few mega prints, and (CB-gated) a LOW fast-cancel rate (retail is not an
+    algo). These are the diagnostic-confirmed separators (design spec §1.1);
+    requires a positive win margin over BOTH 游资 and 量化 to be assigned.
 
 These rules never reference a specific stock/date (compliance hard-rule #2) and use
-intraday-only features. Per-feature normalisation is the existing z-score / rank
-form; class weights are 1.0 stubs (equal) — only the dimension *routing* into the
-three scores is real here, weight-tuning remains future work.
+intraday-only features. NOTE: there is NO cross-sample normalisation yet — `_class_score`
+applies `_clip01(raw)` directly, so any feature outside [0, 1] saturates (e.g.
+`rs_interval_cv`). Rank/quantile normalisation across the daily stock panel is the planned
+fix (see docs/LIS.md Phase 1, `src/normalize.py`); class weights are 1.0 stubs (equal) —
+only the dimension *routing* into the three scores is real here, weight-tuning remains
+future work.
 """
 
 from __future__ import annotations
@@ -64,40 +64,75 @@ DIMS_QUANT = [
     ("cb_fast_cancel_ratio", True, True),     # fast cancels (HFT) [CB]
 ]
 
-# 散户: retail residual — small orders, NO cadence (HIGH interval CV, LOW burst),
-# LOW aggression, diffuse timing (LOW concentration). Inverse-of-aggression AND
-# inverse-of-machine-rhythm: weak on every "someone is driving this name" axis.
+# 散户: retail DIFFUSENESS — positive signal (not an inverse residual). Many small
+# orders by COUNT, few mega prints, heterogeneous (non-clipped) trade-size distribution,
+# and (CB-gated) a LOW fast-cancel rate (retail is not an algo). These are the
+# diagnostic-confirmed separators (see design spec §1.1); the old rhythm/inverse dims
+# (rs_*, ap_unilateral LOW, oss_small_amount) were dead or anti-signal on the real
+# cross-section and were removed.
 DIMS_RETAIL = [
-    ("oss_small_amount_pct", True, False),    # small-order dominance
-    ("rs_interval_cv", True, False),          # HIGH/irregular CV -> no cadence
-    ("rs_burst_ratio", False, False),         # LOW -> near-zero burst structure
-    ("ap_unilateral_intensity", False, False),# LOW -> low aggression
-    ("pi_time_concentration", False, False),  # LOW -> diffuse timing
+    ("oss_small_count_pct", True, False),     # many small orders by count
+    ("oss_mega_count_pct", False, False),     # few mega prints
+    ("cb_fast_cancel_ratio", False, True),    # retail rarely fast-cancels [CB]
+    ("trd_size_entropy", True, False),        # heterogeneous human print sizes (B.2)
 ]
 
 NEUTRAL = 0.5  # an absent feature casts no vote: +0.5 to that class score
-# 散户 is a GUARDED residual: it may only win the arg-max when BOTH 游资 and 量化
-# are weak (neither score clears NEUTRAL by more than this margin on the same
-# normalised scale). This stops a genuinely balanced, high-rhythm quant day (low
-# directional imbalance) from falling into retail by default — the single most
-# likely failure mode of a naive 3-way. Global constant, not a per-stock value.
-RETAIL_GATE_MARGIN = 0.05
+# 散户 wins only when its OWN evidence beats BOTH 游资 and 量化 by this margin (a
+# RELATIVE win margin, not an absolute veto). This preserves the "no accidental
+# residual win" hedge while removing the obsolete absolute gate, which mis-fired on
+# limit-down names (high ap_unilateral_intensity pushed score_yz above the old gate
+# and vetoed a genuine 散户). OQ-1 resolved the 3-class question, so the absolute
+# hedge is no longer needed. Global constant; value carried from the old gate margin
+# and is NOT fitted to labels.
+RETAIL_WIN_MARGIN = 0.05
+
+# Feature B.3 — limit-UP regime de-contamination (slice 1 of 2).
+# When a stock is sealed at the upper price limit for the majority of the session
+# (seal ratio >= 0.5 = "majority of ticks at the ceiling"), two dims become
+# regime-contaminated and should not influence the 游资 vs 量化 decision:
+#   * rs_interval_cv  → falsely LOW in sealed regime (order arrival becomes
+#     mechanically regular when the book is locked), which inflates score_qt.
+#   * pd_max_price_impact_pct → falsely LOW in sealed regime (price stops moving
+#     once sealed), which suppresses score_yz.
+# LIMIT_SEAL_MIN = 0.5 is a principled "majority-of-session sealed" threshold.
+# It is NOT grid-searched on the 4 labelled limit-up stocks; 0.5 is the natural
+# midpoint of [0,1] meaning "more than half of all ticks were at the limit price",
+# which is the minimum evidence of a genuine seal.
+LIMIT_SEAL_MIN = 0.5
 
 
 def _clip01(x: float) -> float:
     return 0.0 if x < 0 else (1.0 if x > 1 else x)
 
 
-def _class_score(feat: dict, dims: list, cb_available: bool) -> float:
+def _class_score(
+    feat: dict,
+    dims: list,
+    cb_available: bool,
+    skip_keys: "frozenset[str] | None" = None,
+) -> float:
     """Mean normalised vote across a class's dimensions, in [0, 1].
 
     Absent dims (missing/NaN key, or a CB dim with no cancel table) vote NEUTRAL
     so the score stays comparable across classes regardless of dim count.
+
+    Parameters
+    ----------
+    skip_keys:
+        Optional set of feature keys to treat as NEUTRAL for this scoring call.
+        Used by the limit-UP regime branch in ``score_capital_type`` to neutralize
+        regime-contaminated dims without altering the dim lists themselves.
     """
     total = 0.0
     for key, high_supports, is_cb in dims:
         raw = feat.get(key, None)
-        absent = (raw is None) or (raw != raw) or (is_cb and not cb_available)
+        absent = (
+            (raw is None)
+            or (raw != raw)
+            or (is_cb and not cb_available)
+            or (skip_keys is not None and key in skip_keys)
+        )
         if absent:
             total += NEUTRAL
             continue
@@ -110,19 +145,59 @@ def score_capital_type(feat: dict) -> tuple[str, list]:
     """Return (capital_type, [score_youzi, score_quant, score_retail]).
 
     Three continuous class scores (each in [0, 1]) and their guarded arg-max.
-    散户 is suppressed unless BOTH 游资 and 量化 are weak (§ retail guard); if
-    either shows real signal, the arg-max is between those two only. No hard
-    thresholds beyond the residual gate — labels are produced in Stage-2.
+    散户 wins only when score_rt beats BOTH 游资 and 量化 by RETAIL_WIN_MARGIN;
+    otherwise the arg-max is between 游资/量化 only. No per-stock thresholds —
+    labels are produced in Stage-2.
+
+    Feature B.3 — limit-UP regime de-contamination
+    -----------------------------------------------
+    When ``limit_seal_up_ratio >= LIMIT_SEAL_MIN`` (majority of session sealed at
+    the upper price limit), two dims are neutralized for the 游资/量化 decision:
+      * ``rs_interval_cv`` is excluded from score_qt: a sealed order-book causes
+        mechanically regular order arrival regardless of the actor, so a LOW cv
+        falsely inflates score_qt.
+      * ``pd_max_price_impact_pct`` is excluded from score_yz: price impact
+        collapses once the stock is sealed at the ceiling regardless of capital
+        type, so a LOW impact falsely suppresses score_yz.
+    The 散户 score and the retail guard are unaffected.
     """
     cb_available = float(feat.get("cb_available", 0.0)) > 0.0
-    score_yz = _class_score(feat, DIMS_YOUZI, cb_available)
-    score_qt = _class_score(feat, DIMS_QUANT, cb_available)
+
+    # Feature B.3: detect limit-UP seal regime and build per-class dim-skip sets.
+    seal_up = feat.get("limit_seal_up_ratio")
+    if seal_up is not None and float(seal_up) >= LIMIT_SEAL_MIN:
+        # Regime-contaminated dims: neutralize symmetrically for the 游资/量化 decision.
+        #
+        # rs_interval_cv: artificially LOW when the order-book is sealed regardless
+        # of capital type.  For genuine 游资 this is a false signal (suppresses
+        # score_yz via the True-polarity dim AND inflates score_qt via the
+        # False-polarity dim).  For genuine 量化, cv is also naturally low (machine
+        # cadence) — but in a sealed regime we cannot distinguish regime-driven low
+        # from algo-driven low.  Symmetric neutralization (skip from both yz AND qt)
+        # removes the ambiguous dim from BOTH classes equally, so 量化's other
+        # genuine dims (rs_burst_ratio, oss_small_amount_pct, ap_unilateral_intensity)
+        # still discriminate it correctly.  Asymmetric neutralization (qt only, as
+        # originally designed) was found to regress 量化 limit-up stocks (e.g.
+        # 000100.SZ/20260617) that have strong genuine 量化 evidence but lose too
+        # much score_qt when the single-largest discriminator (cv) is removed.
+        #
+        # pd_max_price_impact_pct: artificially LOW when sealed (price is locked at
+        # the ceiling).  Neutralized from score_yz only (youzi normally has HIGH
+        # impact; this dim is not in DIMS_QUANT so no quant path is affected).
+        skip_qt = frozenset({"rs_interval_cv"})          # falsely-low → inflates qt
+        skip_yz = frozenset({"rs_interval_cv", "pd_max_price_impact_pct"})  # falsely-low dims
+    else:
+        skip_qt = None
+        skip_yz = None
+
+    score_yz = _class_score(feat, DIMS_YOUZI, cb_available, skip_keys=skip_yz)
+    score_qt = _class_score(feat, DIMS_QUANT, cb_available, skip_keys=skip_qt)
     score_rt = _class_score(feat, DIMS_RETAIL, cb_available)
     scores = [score_yz, score_qt, score_rt]
 
-    # Retail guard: 散户 eligible only when neither 游资 nor 量化 has real signal.
-    gate = NEUTRAL + RETAIL_GATE_MARGIN
-    retail_eligible = (score_yz <= gate) and (score_qt <= gate)
+    # Retail guard (relative): 散户 eligible only when its score beats BOTH 游资 and
+    # 量化 by RETAIL_WIN_MARGIN. Otherwise the arg-max is between 游资/量化 only.
+    retail_eligible = score_rt >= max(score_yz, score_qt) + RETAIL_WIN_MARGIN
     eligible = [0, 1, 2] if retail_eligible else [0, 1]
 
     best = max(eligible, key=lambda i: scores[i])
