@@ -126,13 +126,14 @@ def test_weighted_f1_empty_frames():
     not (_PARQUET_ROOT.is_dir() and _LABELS.is_file()),
     reason="requires data/202606 parquet corpus + validation_labels.csv",
 )
-def test_reproduces_baseline_0p5539_n64():
-    """End-to-end harness reproduces the locked baseline 0.5539 / n=64 on {0616-0623}.
+def test_reproduces_baseline_0p6271_n64():
+    """End-to-end harness reproduces the locked baseline 0.6271 / n=64 on {0616-0623}.
 
-    This is the committed-number guarantee for the P2-intent slice: the gate
-    (INTENT_NET_BAND=0.08) scores 0.5539 weighted-F1 over the five dates that
-    predate the 0624 label addendum.  If get_intention or the feature pipeline
-    drifts, this test fails loudly.
+    Committed-number guarantee for the P2-intent-b slice: the asymmetric band
+    (INTENT_NET_BAND=0.08 buy, INTENT_SELL_BAND=0.18 sell) scores 0.6271
+    weighted-F1 over the five dates that predate the 0624 label addendum (up from
+    the symmetric-band 0.5539).  If get_intention or the feature pipeline drifts,
+    this test fails loudly.
     """
     harness = _import_harness()
     res = harness.score_intention(
@@ -141,6 +142,9 @@ def test_reproduces_baseline_0p5539_n64():
         dates=["20260616", "20260617", "20260618", "20260622", "20260623"],
     )
     assert res["n"] == 64
-    assert res["weighted_f1"] == pytest.approx(0.5539, abs=5e-4)
-    # 买入 recall is the P2-intent lever — pin it well above the old-gate 0.185.
+    assert res["weighted_f1"] == pytest.approx(0.6271, abs=5e-4)
+    # P2-intent-b moves two axes together: 卖出 precision up, T0交易 recall up.
+    assert res["per_class"]["卖出"]["precision"] == pytest.approx(0.42, abs=2e-2)
+    assert res["per_class"]["T0交易"]["recall"] == pytest.approx(0.75, abs=2e-2)
+    # 买入 branch is untouched — recall unchanged from the symmetric gate.
     assert res["per_class"]["买入"]["recall"] == pytest.approx(0.519, abs=1e-2)

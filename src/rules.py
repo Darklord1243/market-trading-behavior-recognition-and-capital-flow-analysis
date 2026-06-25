@@ -25,6 +25,7 @@ from __future__ import annotations
 from config import (
     CAPITAL_TYPES,
     INTENT_NET_BAND,
+    INTENT_SELL_BAND,
     INTENTION_CLASSES,
 )
 
@@ -201,22 +202,27 @@ def score_capital_type(feat: dict) -> tuple[str, list]:
 
 
 def get_intention(feat: dict) -> str:
-    """Intent gate — band-only symmetric net-direction (P2-intent fix, Direction A).
+    """Intent gate — asymmetric net-direction band (P2-intent-b, Direction A).
 
     net = ap_active_buy_pct − ap_active_sell_pct
         Positive → aggressive buy pressure; negative → aggressive sell pressure.
         Defaults: buy_pct=0.5, sell_pct=0.5 → net=0 → T0交易 (neutral default).
 
-    Gate (τ = INTENT_NET_BAND, calibrated from 20260623 LHB-validated distribution):
-        net > +τ  → 买入   (directional buy)
-        net < −τ  → 卖出   (directional sell)
-        otherwise → T0交易 (neutral / two-sided)
+    Gate (asymmetric bands, calibrated against LHB validation labels):
+        net > +τ_buy   → 买入   (τ_buy  = INTENT_NET_BAND  = 0.08)
+        net < −τ_sell  → 卖出   (τ_sell = INTENT_SELL_BAND = 0.18)
+        otherwise      → T0交易 (neutral / two-sided)
 
-    The old AND-conjunct with blended_imbalance is intentionally dropped:
-    the imbalance signal has a structural cross-sectional median of −0.18
-    (driven by obp_imbalance_mean) that asymmetrically blocked 买入 while
-    the buy/sell pct signals are clean and centered.  Imbalance is still
-    used by _intent_confidence (label.py) for model weighting — it does NOT
+    Why asymmetric (P2-intent-b — docs/hypotheses/p2-intent-b-sell-precision.md):
+    the buy band is well-placed (买入 precision 0.83), but T0交易's net distribution
+    is left-skewed (median −0.04, the obp sell-lean), so a symmetric −0.08 sell cut
+    lands inside the neutral shoulder and over-fires (卖出 precision 0.27, sweeping in
+    14 true-T0 + 5 true-买入).  Widening only the sell side to −0.18 sheds that mild
+    T0 mass (true-卖出 sit deeper, median −0.185) — 卖出 precision 0.27→0.42 and T0交易
+    recall 0.48→0.76 move together; the buy branch is byte-identical.
+
+    The old AND-conjunct with blended_imbalance remains dropped (P2-intent): imbalance
+    is used only by _intent_confidence (label.py) for model weighting — it does NOT
     gate the returned label here.
     """
     buy_pct = feat.get("ap_active_buy_pct", 0.5)
@@ -224,6 +230,6 @@ def get_intention(feat: dict) -> str:
     net = buy_pct - sell_pct
     if net > INTENT_NET_BAND:
         return INTENTION_CLASSES[0]   # 买入
-    if net < -INTENT_NET_BAND:
+    if net < -INTENT_SELL_BAND:
         return INTENTION_CLASSES[1]   # 卖出
     return INTENTION_CLASSES[2]       # T0交易

@@ -384,8 +384,13 @@ def test_limit_up_branch_exact_min_boundary():
 # ---------------------------------------------------------------------------
 
 def _intent_tau():
-    """Return the configured INTENT_NET_BAND from config (not a hardcoded literal)."""
+    """Return the configured buy-side band INTENT_NET_BAND (not a hardcoded literal)."""
     return config.INTENT_NET_BAND
+
+
+def _intent_tau_sell():
+    """Return the configured sell-side band INTENT_SELL_BAND (P2-intent-b asymmetry)."""
+    return config.INTENT_SELL_BAND
 
 
 def test_intent_band_buy_above_tau():
@@ -401,14 +406,15 @@ def test_intent_band_buy_above_tau():
 
 
 def test_intent_band_sell_below_neg_tau():
-    """net < -τ → 卖出 (strict inequality)."""
-    tau = _intent_tau()
+    """net < -τ_sell → 卖出 (strict inequality; sell uses the wider band)."""
+    tau_sell = _intent_tau_sell()
     feat = {
-        "ap_active_buy_pct": 0.5 - tau - 0.01,
-        "ap_active_sell_pct": 0.5 + tau + 0.01,
+        "ap_active_buy_pct": 0.5 - tau_sell - 0.01,
+        "ap_active_sell_pct": 0.5 + tau_sell + 0.01,
     }
     assert get_intention(feat) == "卖出", (
-        f"net={feat['ap_active_buy_pct'] - feat['ap_active_sell_pct']:.4f} < -τ={-tau} must yield 卖出"
+        f"net={feat['ap_active_buy_pct'] - feat['ap_active_sell_pct']:.4f} < -τ_sell={-tau_sell} "
+        f"must yield 卖出"
     )
 
 
@@ -429,25 +435,51 @@ def test_intent_band_t0_within_tau():
 
 
 def test_intent_band_boundary_exact_tau_is_t0():
-    """net == +τ exactly → T0交易 (gate is strict >, not >=).
+    """net == +τ_buy and net == -τ_sell exactly → T0交易 (gates are strict >/<).
 
-    This pins the > boundary semantics: a stock at exactly ±τ does NOT trigger
-    the directional branch — it falls through to T0交易.
+    Pins the boundary semantics on BOTH (now asymmetric) sides: a stock at exactly
+    the buy band (+τ_buy) or exactly the sell band (-τ_sell) does NOT trigger the
+    directional branch — it falls through to T0交易.
 
-    We construct net == τ directly in the feature dict to avoid floating-point
-    arithmetic creating net = τ + ε. With ap_active_buy_pct=τ and
-    ap_active_sell_pct=0, net = τ − 0 = τ exactly.
+    net is constructed directly in the feature dict to avoid floating-point
+    arithmetic creating net = τ ± ε.
     """
-    tau = _intent_tau()
-    # net = +τ exactly (buy_pct=tau, sell_pct=0; artificial but float-exact)
-    feat_pos = {"ap_active_buy_pct": tau, "ap_active_sell_pct": 0.0}
-    # net = -τ exactly
-    feat_neg = {"ap_active_buy_pct": 0.0, "ap_active_sell_pct": tau}
+    tau_buy = _intent_tau()
+    tau_sell = _intent_tau_sell()
+    # net = +τ_buy exactly (buy_pct=τ_buy, sell_pct=0; float-exact)
+    feat_pos = {"ap_active_buy_pct": tau_buy, "ap_active_sell_pct": 0.0}
+    # net = -τ_sell exactly
+    feat_neg = {"ap_active_buy_pct": 0.0, "ap_active_sell_pct": tau_sell}
     assert get_intention(feat_pos) == "T0交易", (
-        f"net == +τ={tau} must be T0交易 (strict >); got {get_intention(feat_pos)}"
+        f"net == +τ_buy={tau_buy} must be T0交易 (strict >); got {get_intention(feat_pos)}"
     )
     assert get_intention(feat_neg) == "T0交易", (
-        f"net == -τ={-tau} must be T0交易 (strict <); got {get_intention(feat_neg)}"
+        f"net == -τ_sell={-tau_sell} must be T0交易 (strict <); got {get_intention(feat_neg)}"
+    )
+
+
+def test_intent_band_asymmetric_gap_is_t0():
+    """KEY P2-intent-b REGRESSION — net in (-τ_sell, -τ_buy) → T0交易, NOT 卖出.
+
+    A mild-negative net that sits between the buy band and the (wider) sell band
+    is the structurally sell-leaning T0交易 mass the audit identified.  Under the
+    OLD symmetric gate (one τ=0.08) such a row returned 卖出 (false positive);
+    under the asymmetric gate it correctly falls through to T0交易.
+
+    This test FAILS on the symmetric code and PASSES on the asymmetric gate.
+    """
+    tau_buy = _intent_tau()
+    tau_sell = _intent_tau_sell()
+    assert tau_sell > tau_buy, (
+        f"asymmetry invariant: τ_sell={tau_sell} must exceed τ_buy={tau_buy}"
+    )
+    # net squarely inside the gap, e.g. midpoint of (-τ_sell, -τ_buy)
+    net = -(tau_buy + tau_sell) / 2.0  # e.g. -(0.08+0.18)/2 = -0.13
+    feat = {"ap_active_buy_pct": 0.5 + net / 2.0, "ap_active_sell_pct": 0.5 - net / 2.0}
+    assert -tau_sell < net < -tau_buy, f"pre-condition: net={net} must be in the asymmetric gap"
+    assert get_intention(feat) == "T0交易", (
+        f"net={net:.4f} in (-τ_sell={-tau_sell}, -τ_buy={-tau_buy}) must yield T0交易 "
+        f"(asymmetric band); got {get_intention(feat)}"
     )
 
 

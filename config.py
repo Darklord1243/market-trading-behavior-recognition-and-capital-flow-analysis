@@ -115,3 +115,14 @@ IMBALANCE_FULLDAY_WEIGHT = 0.6
 # τ=0.14 scores higher raw F1 (0.6122) but collapses 0623 directional to 25%,
 # violating the distribution target, so it is deliberately not chosen.
 INTENT_NET_BAND = 0.08
+# Asymmetric sell-side band (P2-intent-b — docs/hypotheses/p2-intent-b-sell-precision.md).
+# The buy band (INTENT_NET_BAND) is well-placed (买入 precision 0.83), but T0交易's net
+# distribution is left-skewed (median −0.04, p25 −0.14, the obp sell-lean), so a SYMMETRIC
+# −0.08 sell cut lands inside the neutral shoulder and over-fires: 卖出 precision 0.27,
+# with 14 true-T0 + 5 true-买入 swept in as false sells.  Widening only the sell side to
+# −0.18 sheds that mild-negative T0 mass while keeping the deep real sells (true-卖出
+# median −0.185).  Calibrated on LHB labels (joint sweep peak on BOTH n=64 and n=76, a
+# plateau not a spike) — NOT on any Tianchi/platform score (compliance hard-rule #3).
+# Effect: intention weighted-F1  n=64 0.5539→0.6271, n=76 0.5772→0.6480; 卖出 precision
+# 0.27→0.42 AND T0交易 recall 0.48→0.76 move together; buy branch byte-identical.
+INTENT_SELL_BAND = 0.18
