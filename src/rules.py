@@ -24,11 +24,7 @@ from __future__ import annotations
 
 from config import (
     CAPITAL_TYPES,
-    IMBALANCE_FULLDAY_WEIGHT,
-    IMBALANCE_SNAPSHOT_WEIGHT,
-    INTENT_BUY_PCT,
-    INTENT_IMBALANCE,
-    INTENT_SELL_PCT,
+    INTENT_NET_BAND,
     INTENTION_CLASSES,
 )
 
@@ -205,18 +201,29 @@ def score_capital_type(feat: dict) -> tuple[str, list]:
 
 
 def get_intention(feat: dict) -> str:
-    """Intent gate (baseline get_intention, verbatim thresholds).
+    """Intent gate — band-only symmetric net-direction (P2-intent fix, Direction A).
 
-    Dual-source book imbalance = 0.4*first-snapshot + 0.6*full-day mean.
+    net = ap_active_buy_pct − ap_active_sell_pct
+        Positive → aggressive buy pressure; negative → aggressive sell pressure.
+        Defaults: buy_pct=0.5, sell_pct=0.5 → net=0 → T0交易 (neutral default).
+
+    Gate (τ = INTENT_NET_BAND, calibrated from 20260623 LHB-validated distribution):
+        net > +τ  → 买入   (directional buy)
+        net < −τ  → 卖出   (directional sell)
+        otherwise → T0交易 (neutral / two-sided)
+
+    The old AND-conjunct with blended_imbalance is intentionally dropped:
+    the imbalance signal has a structural cross-sectional median of −0.18
+    (driven by obp_imbalance_mean) that asymmetrically blocked 买入 while
+    the buy/sell pct signals are clean and centered.  Imbalance is still
+    used by _intent_confidence (label.py) for model weighting — it does NOT
+    gate the returned label here.
     """
     buy_pct = feat.get("ap_active_buy_pct", 0.5)
     sell_pct = feat.get("ap_active_sell_pct", 0.5)
-    imbalance = (
-        IMBALANCE_SNAPSHOT_WEIGHT * feat.get("book_imbalance", 0.0)
-        + IMBALANCE_FULLDAY_WEIGHT * feat.get("obp_imbalance_mean", 0.0)
-    )
-    if buy_pct > INTENT_BUY_PCT and imbalance > INTENT_IMBALANCE:
+    net = buy_pct - sell_pct
+    if net > INTENT_NET_BAND:
         return INTENTION_CLASSES[0]   # 买入
-    if sell_pct > INTENT_SELL_PCT and imbalance < -INTENT_IMBALANCE:
+    if net < -INTENT_NET_BAND:
         return INTENTION_CLASSES[1]   # 卖出
     return INTENTION_CLASSES[2]       # T0交易

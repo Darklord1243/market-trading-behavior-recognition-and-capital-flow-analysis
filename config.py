@@ -103,3 +103,15 @@ INTENT_IMBALANCE = 0.08
 # Dual-source imbalance blend: 0.4 * first-snapshot + 0.6 * full-day mean.
 IMBALANCE_SNAPSHOT_WEIGHT = 0.4
 IMBALANCE_FULLDAY_WEIGHT = 0.6
+# Band-only net-direction gate (Direction A — P2-intent fix, Phase B).
+# net = ap_active_buy_pct − ap_active_sell_pct; symmetric around 0.
+# Calibrated from the 20260623 panel net-direction distribution, validated
+# against LHB labels (n=64) — NOT against any Tianchi/platform score
+# (compliance hard-rule #3).  Selection rule: the human lead fixed the
+# acceptance target at 20260623 T0 share ∈ [40%,55%] (directional ~44-56%);
+# of the swept grid {.04,.06,.08,.10,.12,.14,.16,.20}, τ=0.08 is the UNIQUE
+# value landing in that band (T0=49.5%, directional 50.5%) and lifts intention
+# weighted-F1 to 0.5539 (baseline 0.4242; 买入 recall 0.185→0.519).  A larger
+# τ=0.14 scores higher raw F1 (0.6122) but collapses 0623 directional to 25%,
+# violating the distribution target, so it is deliberately not chosen.
+INTENT_NET_BAND = 0.08
