@@ -20,9 +20,47 @@ snapshot, and BOTH Task 2 heads are *healthy-to-improved* on the 0626 OOS proxy.
 > distribution moved materially day-over-day and (b) the only head with ZERO
 > ground-truth labels, i.e. a complete validation blind spot.**
 
-Task 1 is the prime suspect **by elimination**, but it is currently **unfalsifiable** —
-we have no pattern_type labels. The one remaining place a *fixable* bug could still hide
-is a partial-parquet pack at 21:39 (H1b); the recommended next slice closes that.
+Task 1 is the prime suspect **by elimination**. The one remaining place a *fixable* bug
+could still hide was a partial-parquet pack at 21:39 (H1b) — **now closed** (see Update).
+
+> **Update supersedes two claims below:** (1) H1b is **rejected** — the 0626 re-run is
+> byte-identical to the submitted pack. (2) Task 1 is **not** a "complete blind spot":
+> it is scored on **silhouette + CH + Wasserstein + DTW** (LIS §1), which are
+> offline-computable. See the Update section. Follow-up: `p4-pattern-type-label-gate.md`.
+
+---
+
+## Update (2026-06-28, same session) — reproducibility + Task-1 scoring correction
+
+### U1. Reproducibility re-run — **IDENTICAL → H1b rejected**
+Re-ran `main.py --input parquet:data/202606 --universe samples/stock-samples.xlsx
+--date 20260626` to a scratch dir (data_mining env, deterministic seed; **no repack, no
+submit, scratch dir deleted after diff**). Both outputs are **byte-identical** to the
+submitted pack:
+
+| file | re-run SHA256 | committed SHA256 (outputs/20260626) | verdict |
+|---|---|---|---|
+| predict_result.csv | `bfcc1cb140b48e7b52c2501c26c6bbb695228eae067c3668e61213eb2ea8a255` | same | **IDENTICAL** |
+| pattern_reco.csv | `d0150073381c4660bc1b5aedce92f39d8f00427023932b0c3f26901e71b4936c` | same | **IDENTICAL** |
+
+Re-run internals matched committed: K-sweep best **K=6 (silhouette=0.1453, CH=16.4)**,
+pattern `{机构43, 游资28, 买盘16, 卖压13}`, capital `{游资42, 量化30, 散户28}`,
+intent `{T0:63, 卖出21, 买入16}`. → The 21:39 pack ran on the **complete** parquet, not
+partial data. **H1b rejected.** Every *fixable, detectable* defect is now ruled out.
+
+### U2. Correction — Task 1 is metric-scored, NOT a string-match blind spot
+The TL;DR / Section E framing of Task 1 as having "zero ground truth = complete blind
+spot" is **imprecise**. Per LIS §1:
+- **Task 1 (0.4)** scored by **silhouette + CH + Wasserstein + DTW** (separation + cohesion).
+- `pattern_type` is **open-vocabulary — scored on rationality/interpretability, not string match.**
+
+Implication: Task 1 has **no string-match truth**, but its board-aligned scoring
+components **are offline-computable from the data + our clustering** — no labels, no
+§3.3 risk. We simply had not computed them. The observed 0626 **silhouette 0.1453 is
+low** (weak separation); whether it is *lower than 0625* is the actual falsifiable H2
+test. This supersedes the recommendation to build a "pattern-F1" gate (which would
+measure something the board does not). The board-aligned Task-1 gate is a
+**clustering-quality gate** — specified in `p4-pattern-type-label-gate.md`.
 
 ---
 
@@ -117,7 +155,7 @@ so the p3 leakage did not *worsen* on 0626 — it is steady-state.
 
 | # | hypothesis | evidence FOR | evidence AGAINST | confirming test |
 |---|---|---|---|---|
-| **H2** | **Task 1 pattern regression / mis-map on 0626 key** | only head with big distribution move; **zero ground-truth labels = blind spot**; by elimination (Task 2 healthy) a head must have dropped ~0.22–0.32 | 0624→0625 had bigger 机构 swing with ~no board change | **seed pattern_type labels**, score Task 1 offline per day |
+| **H2** | **Task 1 quality regression on 0626** | only head with big distribution move; observed 0626 **silhouette 0.1453 (low)**; by elimination (Task 2 healthy) a head must have dropped ~0.22–0.32 | 0624→0625 had bigger 机构 swing with ~no board change | **compute silhouette/CH/Wasserstein/DTW per day, 0625 vs 0626** (no labels needed) |
 | **H5** | **0626 board key genuinely hard; proxy can't see universe-Task2** | every measurable head fine yet board fell; LHB labels are off-universe, board is on-universe | no positive evidence of a defect anywhere | seed on-universe labels (or accept day-variance) |
 | **H1b** | **pack ran on partial parquet at 21:39 (files still finishing 21:30–21:33)** | tight 6-min window | files are complete NOW; deterministic seed | **re-run 0626 from current parquet, diff vs committed CSVs** |
 | H3 | Task 2 intention overshoot (卖出 10→21) | 卖出 doubled | intention OOS **rose** to 0.747; 卖出 prod share normal vs 0624 (19) | covered by Section B — rejected |
@@ -132,10 +170,13 @@ catch a *fixable* bug today (H1b partial-pack):
 - **Identical** → H1b dead; collapse is H2/H5 → escalate to the structural fix below.
 - **Differs** → the pack ran on incomplete data; we found the bug.
 
-**Structural follow-up (dependent, needs human go):** Task 1 (pattern_type) is the prime
-suspect *and* completely unvalidated. Seed pattern_type ground-truth labels so Task 1 gets its
-own offline gate (mirror the capital/intention harness). Until then H2 cannot be confirmed or
-denied, and 40% of the board score flies blind.
+**Structural follow-up (dependent, needs human go):** Task 1 is the prime suspect by
+elimination. Per LIS §1 it is scored on **silhouette + CH + Wasserstein + DTW** (not string
+match), so the board-aligned offline gate is a **clustering-quality gate** computed from data +
+clustering — no labels, no §3.3 risk. Build it, then compare 0625 vs 0626 to confirm/deny H2.
+Pattern-label seeding is a *secondary* rationality/interpretability check, not a primary F1.
+Full spec: `p4-pattern-type-label-gate.md`. (See Update U2 — supersedes the earlier
+"pattern-F1 / blind spot" framing.)
 
 **Forbidden without approval:** board-driven threshold tweaks, limit-up nudges, P2-intent-b revert,
 submit regen.
