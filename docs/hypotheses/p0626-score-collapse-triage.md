@@ -62,6 +62,34 @@ test. This supersedes the recommendation to build a "pattern-F1" gate (which wou
 measure something the board does not). The board-aligned Task-1 gate is a
 **clustering-quality gate** — specified in `p4-pattern-type-label-gate.md`.
 
+### U3. Slice 6a — label-free silhouette/CH comparison → **H2 NOT supported, H5 favored**
+Re-ran clustering for both days (scratch dirs, deleted after; both reproduce committed
+outputs). Best-K silhouette + CH (`src/cluster.py` sklearn, from K-sweep logs):
+
+| date | K | silhouette | CH | n_clusters | pattern labels | degeneracy |
+|---|---|---|---|---|---|---|
+| 20260625 | 6 | **0.1548** | **15.3** | 6 | 4 (机构61 游资17 卖压14 买盘8) | none (no cluster <2) |
+| 20260626 | 6 | **0.1453** | **16.4** | 6 | 4 (机构43 游资28 卖压13 买盘16) | none (no cluster <2) |
+| Δ (0626−0625) | 0 | **−0.0095** | **+1.1** | — | — | — |
+
+**The two days are near-identical on cluster quality, and the two metrics disagree in
+direction** — silhouette dips ~6% on 0626 while CH *improves* ~7%. A −0.0095 silhouette
+move (with CH up) **cannot plausibly drive a −0.13 board collapse**. Both days sit at the
+same low silhouette (~0.15), same K=6, same 4-label resolution, no degenerate clusters.
+
+**Verdict: H5, not H2.** On the 2-of-4 measurable board components, Task-1 internal cluster
+quality is **stable** 0625→0626. There is no detectable Task-1 regression. Combined with the
+rest of this triage (submission OK, data complete, outputs reproducible, both Task-2 proxies
+healthy/improved), **no detectable defect exists anywhere** — the 0.3265 is most consistent
+with the **0626 board key simply being harder for the frozen pipeline** (each board day is a
+different hidden key; cross-day score deltas conflate pipeline behavior with key difficulty),
+and/or universe-Task2 behavior our off-universe OOS proxy cannot see.
+
+**Caveat (unchanged):** silhouette + CH are only **2 of 4** Task-1 components. Wasserstein +
+DTW remain unmeasured pending **LIS open-Q #2** (their input object); it is *possible* — but
+unevidenced — that they diverge across the two days. This verdict is "no Task-1 regression on
+the measurable components," not a proof of identical Task-1 board scores.
+
 ---
 
 ## A. Submission integrity — **VERDICT: OK**
