@@ -81,3 +81,55 @@ fitting noise. **Do not** touch `get_intention` (intention gate is unaffected he
 ## 6. Compliance
 Read-only triage. No tuning to the 0.4558 board point (compliance #3). P2-intent-b
 (`b9c1b72`) stays — no frozen-gate regression observed.
+
+---
+
+## 7. P3.2 probe (2026-06-28, read-only) — `rs_burst_ratio` source resolved
+
+**Verdict: §5 outcome (1) — FEATURE-EXTRACTION BUG (wrong source), NOT genuine absence.**
+
+`_rs_features` (src/features.py:103) keys off `group["datetime_utc"]`, which in the parquet
+path is built **only from the snapshot stream (十盘档口 `TickTime`)** — see
+`ingest_parquet._clean_snapshot:211` → `pipeline_parquet.build_feature_matrix_for_panel`
+loads snapshot as the cleaned frame; the deal stream is read only for *sizes*
+(`read_deal_sizes_parquet`) and the order stream only for *cancels*. **The true tick
+timestamps never reach `_rs_features`.**
+
+### Burst by source — 0625 labeled keys (n=16), burst = share of inter-event intervals <100ms
+| source (stream / col) | what feeds it | mean burst | median interval | rows/stock |
+|---|---|---|---|---|
+| **snapshot 十盘档口 `TickTime`** | **used by `_rs_features` today** | **0.000 (all 16)** | **3000 ms** (exact) | ~3k–5k |
+| deal 逐笔成交 `DealTime` | NOT fed to RS | 0.59–0.95 | **0–10 ms** | 8k–769k |
+| order 逐笔委托 `OrderTime` | NOT fed to RS | 0.33–0.96 | 0–240 ms | 14k–794k |
+
+Snapshot is **~3 s sampled → zero sub-100 ms intervals are even possible**, so `rs_burst_ratio≡0`
+for every stock by construction. The sub-100 ms burst signal **exists abundantly** in the tick
+streams. (Same root afflicts `rs_interval_cv`: snapshot's single lunch-gap outlier dominates →
+~18 for *every* stock → also non-discriminating. The whole RS cadence block is snapshot-degenerate.)
+
+### Directional-day discrimination spot check (mean burst by p3 truth class)
+| truth | n | mean **deal**_burst | mean **order**_burst |
+|---|---|---|---|
+| 散户 | 4 | 0.635 | 0.472 |
+| 游资 | 6 | 0.778 | 0.705 |
+| 量化 | 6 | 0.808 | 0.776 |
+
+- **Ordering is correct** (散户 < 游资 < 量化) — a re-sourced burst dim adds **genuine** signal,
+  strongest at separating **散户 (low) from {游资,量化} (high)**.
+- **But it does NOT cleanly fix the p3 量化→游资 boundary**: on a directional day 量化 (0.808) and
+  游资 (0.778) overlap heavily, and individual genuine 游资 (600584 deal_burst **0.915**, 000783
+  **0.903**) out-burst several true 量化 (002687 0.691, 300961 0.703). A naive "high burst → 量化"
+  vote would mis-pull those high-burst 游资 into 量化. `order_burst` separates 量化/游资 marginally
+  better (Δ0.07 vs Δ0.03) but is still weak.
+
+### Recommendation (needs human go — NOT implemented; code change out of this read-only scope)
+1. **Re-source the RS cadence block** (`rs_burst_ratio`, `rs_interval_cv`, `rs_split_similarity`)
+   from the tick stream (deal `DealTime` and/or order `OrderTime`) instead of snapshot `TickTime`.
+   This is a **measurement correction**, decided by the **frozen gates**, never the board.
+2. **Calibrate expectations:** treat this as reviving a dead 散户-vs-rest discriminator, **not** a
+   targeted p3 fix. Promote only if {through-0624} 0.6773 / {through-0625} 0.6500 **do not regress**
+   and 量化 recall rises. Do **not** pair it with a limit-up→量化 nudge (§5).
+3. Decide deal vs order source on the frozen gate (order = "订单爆发", closer to the feature's intent;
+   deal = "成交爆发"). The feature name `订单/成交爆发比率` covers both — pick by gate delta, not by board.
+
+Probe: `scratchpad/p3_burst_probe.py` (read-only; filtered pyarrow reads, never writes under data/).
