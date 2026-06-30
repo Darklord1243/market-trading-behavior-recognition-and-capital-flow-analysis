@@ -366,3 +366,51 @@ def test_read_deal_sizes_parquet_missing_stock_is_empty(tmp_path):
     # 000002.SZ has no deal rows with Side in {0,1} in the fixture
     lk = read_deal_sizes_parquet(root, _DATE, ["000002.SZ"])
     assert lk[("000002.SZ", _DATE)] == []
+
+
+# ---------------------------------------------------------------------------
+# P3.3 — read_deal_times_parquet / read_order_times_parquet (TDD: before impl)
+# ---------------------------------------------------------------------------
+
+def test_read_deal_times_parquet_returns_genuine_times(tmp_path):
+    """Genuine deal prints (Side∈{0,1}, vol>0) → their DealTime ints; cancels excluded.
+
+    Fixture deal rows for SecuCode 1:
+      Side=1,  Volume=100,    DealTime=93000500 -> genuine
+      Side=-1, Volume=999999, DealTime=93000600 -> cancel -> excluded
+      Side=0,  Volume=20000,  DealTime=93001500 -> genuine
+    """
+    from src.ingest_parquet import read_deal_times_parquet
+    root = write_tiny_parquet(str(tmp_path))
+    lk = read_deal_times_parquet(root, _DATE, ["000001.SZ"])
+    assert sorted(lk[("000001.SZ", _DATE)]) == [93000500, 93001500]
+
+
+def test_read_deal_times_parquet_missing_stock_is_empty(tmp_path):
+    """A stock with no genuine deal prints maps to an empty list."""
+    from src.ingest_parquet import read_deal_times_parquet
+    root = write_tiny_parquet(str(tmp_path))
+    lk = read_deal_times_parquet(root, _DATE, ["000002.SZ"])
+    assert lk[("000002.SZ", _DATE)] == []
+
+
+def test_read_order_times_parquet_returns_event_times(tmp_path):
+    """All order events for a stock → their OrderTime ints (adds + cancels).
+
+    SecuCode 1 order rows (OrderTime): 93000000, 93000100, 93000500, 93000800,
+    93001000, 93001050.
+    """
+    from src.ingest_parquet import read_order_times_parquet
+    root = write_tiny_parquet(str(tmp_path))
+    lk = read_order_times_parquet(root, _DATE, ["000001.SZ"])
+    assert sorted(lk[("000001.SZ", _DATE)]) == [
+        93000000, 93000100, 93000500, 93000800, 93001000, 93001050,
+    ]
+
+
+def test_read_order_times_parquet_missing_stock_is_empty(tmp_path):
+    """A stock with no order rows maps to an empty list."""
+    from src.ingest_parquet import read_order_times_parquet
+    root = write_tiny_parquet(str(tmp_path))
+    lk = read_order_times_parquet(root, _DATE, ["000003.SZ"])   # not in fixture
+    assert lk[("000003.SZ", _DATE)] == []

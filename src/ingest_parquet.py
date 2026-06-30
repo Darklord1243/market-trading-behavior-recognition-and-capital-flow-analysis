@@ -317,6 +317,82 @@ def read_deal_sizes_parquet(root: str, date: str, keys: list[str]) -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------
+# RS cadence event times (P3.3) — sub-100ms deal/order tick timestamps
+# ---------------------------------------------------------------------------
+
+def _deal_time_maps(
+    root: str, date: str, secu_codes: Optional[list[int]]
+) -> dict[int, list[int]]:
+    """``{secu: [genuine-trade DealTime ints]}`` from the ``deal`` stream.
+
+    The cadence sibling of :func:`_deal_size_maps`: same genuine-print filter
+    (``Side ∈ {0,1}`` & ``Volume > 0``) but keeps the raw ``DealTime`` HHMMSSmmm
+    integer of each print — the true sub-100ms event clock that the snapshot
+    ``TickTime`` (~3 s) cannot carry.  Cancels / auction (``Side ∉ {0,1}``) and
+    non-positive volumes are excluded.
+    """
+    df = _read_stream(root, date, "deal", secu_codes, columns=["SecuCode", "Side", "Volume", "DealTime"])
+    if df is None or df.empty:
+        return {}
+    side = pd.to_numeric(df["Side"], errors="coerce")
+    vol = pd.to_numeric(df["Volume"], errors="coerce")
+    keep = df[side.isin((0, 1)) & (vol > 0)].copy()
+    if keep.empty:
+        return {}
+    keep["_t"] = pd.to_numeric(keep["DealTime"], errors="coerce")
+    keep = keep[keep["_t"].notna()]
+    out: dict[int, list[int]] = {}
+    for secu, grp in keep.groupby("SecuCode"):
+        out[int(secu)] = grp["_t"].astype("int64").tolist()
+    return out
+
+
+def _order_time_maps(
+    root: str, date: str, secu_codes: Optional[list[int]]
+) -> dict[int, list[int]]:
+    """``{secu: [OrderTime ints]}`` from the ``order`` (委托补全) stream.
+
+    Keeps EVERY order event's ``OrderTime`` HHMMSSmmm integer (both adds and
+    cancels — the full order-arrival cadence).  Non-numeric times are dropped.
+    """
+    df = _read_stream(root, date, "order", secu_codes, columns=["SecuCode", "OrderTime"])
+    if df is None or df.empty:
+        return {}
+    t = pd.to_numeric(df["OrderTime"], errors="coerce")
+    keep = df[t.notna()].copy()
+    if keep.empty:
+        return {}
+    keep["_t"] = t[t.notna()]
+    out: dict[int, list[int]] = {}
+    for secu, grp in keep.groupby("SecuCode"):
+        out[int(secu)] = grp["_t"].astype("int64").tolist()
+    return out
+
+
+def read_deal_times_parquet(root: str, date: str, keys: list[str]) -> dict:
+    """Public RS-cadence builder — ``{(stock_code, date_str): [DealTime ints]}``.
+
+    ONE batch ``deal`` read for all *keys* (mirrors :func:`read_deal_sizes_parquet`).
+    Stocks with no genuine prints map to an empty list (backward-safe → RS falls
+    back to the snapshot clock).  Selected via ``config.RS_CADENCE_SOURCE == "deal"``.
+    """
+    secus = [stock_code_to_secu(k) for k in keys] if keys else None
+    maps = _deal_time_maps(root, date, secus)
+    return {(k, str(date)): maps.get(stock_code_to_secu(k), []) for k in (keys or [])}
+
+
+def read_order_times_parquet(root: str, date: str, keys: list[str]) -> dict:
+    """Public RS-cadence builder — ``{(stock_code, date_str): [OrderTime ints]}``.
+
+    ONE batch ``order`` read for all *keys*.  Stocks with no order rows map to an
+    empty list (backward-safe).  Selected via ``config.RS_CADENCE_SOURCE == "order"``.
+    """
+    secus = [stock_code_to_secu(k) for k in keys] if keys else None
+    maps = _order_time_maps(root, date, secus)
+    return {(k, str(date)): maps.get(stock_code_to_secu(k), []) for k in (keys or [])}
+
+
 def _assign_bigorder(tick_int: pd.Series, big_map: dict[int, float]) -> pd.Series:
     """Assign each large print to the snapshot tick covering its time (left-exclusive).
 

@@ -101,11 +101,14 @@ def build_feature_matrix_for_panel(
     Feature matrix (MultiIndex ``(stock_code, transaction_date)``).  Empty
     DataFrame if no data is available.
     """
+    from config import RS_CADENCE_SOURCE
     from src import aggregate
     from src.ingest_parquet import (
         load_parquet,
         read_cancel_frame_parquet,
         read_deal_sizes_parquet,
+        read_deal_times_parquet,           # NEW (P3.3)
+        read_order_times_parquet,          # NEW (P3.3)
         secu_to_stock_code,
         stock_code_to_secu,
     )
@@ -142,11 +145,20 @@ def build_feature_matrix_for_panel(
                 date, code, exc,
             )
 
-    deal_lookup = read_deal_sizes_parquet(root, date, list(present_codes))
+    present = list(present_codes)
+    deal_lookup = read_deal_sizes_parquet(root, date, present)
+
+    # NEW (P3.3): RS cadence event-time lookup, selected by config (snapshot → None).
+    rs_timestamps_lookup = None
+    if RS_CADENCE_SOURCE == "deal":
+        rs_timestamps_lookup = read_deal_times_parquet(root, date, present)
+    elif RS_CADENCE_SOURCE == "order":
+        rs_timestamps_lookup = read_order_times_parquet(root, date, present)
 
     return aggregate.build_feature_matrix(
         df,
         has_cancel_table=True,
         cancel_lookup=cancel_lookup,
         deal_lookup=deal_lookup,
+        rs_timestamps_lookup=rs_timestamps_lookup,
     )

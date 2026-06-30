@@ -44,6 +44,7 @@ def build_feature_matrix(
     has_cancel_table: bool = False,
     cancel_lookup: Optional[dict] = None,
     deal_lookup: Optional[dict] = None,        # NEW (B.2): {(code, date): [print volumes]}
+    rs_timestamps_lookup: Optional[dict] = None,  # NEW (P3.3): {(code, date): [HHMMSSmmm ints]}
 ) -> pd.DataFrame:
     """Reduce the cleaned tick frame to one row per (stock_code, transaction_date).
 
@@ -65,6 +66,12 @@ def build_feature_matrix(
         (list of genuine-trade Volume floats). Produced by calling
         ``ingest_parquet.read_deal_sizes_parquet`` for the day's panel. When
         ``None`` (default — xlsx/snapshot path), ``trd_size_entropy`` is 0.0.
+    rs_timestamps_lookup:
+        Optional dict mapping ``(stock_code, date_str)`` → ``[HHMMSSmmm ints]``
+        (raw deal ``DealTime`` or order ``OrderTime`` tick times). Produced by
+        ``ingest_parquet.read_deal_times_parquet`` / ``read_order_times_parquet``
+        (selected by ``config.RS_CADENCE_SOURCE``). When ``None`` (default —
+        xlsx/snapshot path), RS features use the snapshot ``datetime_utc`` clock.
     """
     rows = []
     keys = []
@@ -75,11 +82,15 @@ def build_feature_matrix(
         deal_volumes = None
         if deal_lookup is not None:
             deal_volumes = deal_lookup.get((code, str(date)))
+        rs_event_times_ms = None
+        if rs_timestamps_lookup is not None:
+            rs_event_times_ms = rs_timestamps_lookup.get((code, str(date)))
         feat = compute_daily_features(
             group,
             has_cancel_table=has_cancel_table,
             cancel_df=cancel_df,
             deal_volumes=deal_volumes,         # NEW (B.2)
+            rs_event_times_ms=rs_event_times_ms,   # NEW (P3.3)
         )
         rows.append(feat)
         keys.append((code, date))

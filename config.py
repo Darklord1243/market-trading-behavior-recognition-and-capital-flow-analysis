@@ -8,6 +8,8 @@ strings are the *exact* submission values required by the official spec
 
 from __future__ import annotations
 
+from typing import Literal
+
 # ---------------------------------------------------------------------------
 # Locked label vocabularies (exact submission strings)
 # ---------------------------------------------------------------------------
@@ -82,6 +84,16 @@ CB_FAST_CANCEL_MS: int = 500
 # scale-free saturation problem of the old 0.25×mean definition (which collapses
 # to 1.0 when mean≈0, i.e. the dtype-bug state).  Baseline reference: 100 ms.
 RS_BURST_THRESHOLD_MS: int = 100
+
+# RS cadence source (P3.3) — which clock feeds rs_burst_ratio / rs_interval_cv /
+# rs_split_similarity on the PARQUET path:
+#   "snapshot" : snapshot datetime_utc (~3 s TickTime) — burst≡0 (the pre-P3.3 bug)
+#   "deal"     : genuine-print DealTime  (逐笔成交, Side∈{0,1}) — true sub-100ms clock
+#   "order"    : OrderTime (委托补全, all events) — true sub-100ms clock
+# xlsx / local always fall back to snapshot datetime_utc (no tick stream → lookup
+# is None).  Winner chosen by FROZEN offline gates only (never the Tianchi board) —
+# see docs/hypotheses/p3.3-rs-cadence-resource.md.
+RS_CADENCE_SOURCE: Literal["snapshot", "deal", "order"] = "snapshot"
 
 # ---------------------------------------------------------------------------
 # TRD — deal-stream print-size heterogeneity (Feature B.2)
