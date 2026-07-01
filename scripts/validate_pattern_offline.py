@@ -89,12 +89,17 @@ def _load_universe(path: str) -> list[str]:
     return load_universe_codes(path)
 
 
-def score_one_date(root: str, universe_codes: list[str], date: str) -> dict | None:
+def score_one_date(
+    root: str, universe_codes: list[str], date: str, method: str = "euclidean"
+) -> dict | None:
     """Recompute the production matrix + intraday trajectories for *date* and
     return the Task-1 clustering-quality components (or None if no data).
 
     Uses ONE extra batched snapshot read for trajectories; the per-stock cancel
     loop is not repeated (docs/hypotheses/p5-task1-metric-alignment.md §3).
+
+    *method* selects the Task-1 clustering path: "euclidean" (default, Slice-1
+    enrichment) or "dtw_precomputed" (Slice-4 — cluster on the DTW distance).
     """
     from src.cluster import score_day
     from src.intraday_trajectory import build_trajectories
@@ -112,11 +117,12 @@ def score_one_date(root: str, universe_codes: list[str], date: str) -> dict | No
         idx: traj_by_key.get((str(idx[0]), str(idx[1])))
         for idx in matrix.index
     }
-    # If nothing resolved (no snapshot), fall back to daily-only scoring.
+    # If nothing resolved (no snapshot), fall back to daily-only scoring.  The DTW
+    # path needs trajectories — let score_day fail loud rather than emit a partial.
     if not any(v is not None for v in trajectories.values()):
         trajectories = None
 
-    d = score_day(matrix, trajectories=trajectories)
+    d = score_day(matrix, trajectories=trajectories, method=method)
     d["date"] = str(date)
     d["panel_n"] = int(len(matrix))
     return d
@@ -131,9 +137,13 @@ def _print_report(rows: list[dict]) -> None:
         audit_s = f"{audit:.4f}" if audit is not None else "   -  "
         flag = "DEGENERATE" if r["degenerate"] else ""
         up = "↑" if audit is not None and r["silhouette"] > audit else ""
+        # Surface cluster sizes so singleton-chaining (average-linkage artifact)
+        # is legible rather than hidden behind a one-word flag.
+        sizes = r.get("cluster_sizes")
+        sizes_s = f" sizes={sizes}" if sizes is not None else ""
         print(f"{r['date']:<10}{r['panel_n']:>8}{r['best_k']:>7}{r['silhouette']:>9.4f}"
               f"{r['silhouette_daily']:>10.4f}{audit_s:>10}{r['ch']:>8.1f}"
-              f"{r['wasserstein_sep']:>10.4f}{r['dtw_sep']:>9.4f}{r['n_clusters']:>7}  {flag}{up}")
+              f"{r['wasserstein_sep']:>10.4f}{r['dtw_sep']:>9.4f}{r['n_clusters']:>7}  {flag}{up}{sizes_s}")
 
     if len(rows) >= 1:
         sils = [r["silhouette"] for r in rows]
@@ -162,7 +172,12 @@ def run(argv: list[str] | None = None) -> int:
                         help="Score every trading-day subdirectory under the corpus root.")
     parser.add_argument("--universe", default=None,
                         help="CSV/xlsx of universe codes (default: samples/stock-samples.xlsx).")
+    parser.add_argument("--method", default="euclidean",
+                        choices=["euclidean", "dtw-precomputed"],
+                        help="Task-1 clustering path: 'euclidean' (default, Slice-1) or "
+                             "'dtw-precomputed' (Slice-4 — cluster on the DTW distance).")
     args = parser.parse_args(argv)
+    method = args.method.replace("-", "_")
 
     logging.basicConfig(level=logging.WARNING,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -196,7 +211,7 @@ def run(argv: list[str] | None = None) -> int:
     rows: list[dict] = []
     for date in dates:
         try:
-            d = score_one_date(root, universe_codes, date)
+            d = score_one_date(root, universe_codes, date, method=method)
         except Exception as exc:  # noqa: BLE001
             print(f"ERROR: scoring failed for {date}: {exc}", file=sys.stderr)
             return 1
@@ -209,6 +224,9 @@ def run(argv: list[str] | None = None) -> int:
         print("ERROR: no dates produced a feature matrix (data missing?)", file=sys.stderr)
         return 1
 
+    if method == "dtw_precomputed":
+        print("method = dtw_precomputed — 'sil' column is DTW-space silhouette "
+              "(precomputed metric); 'audit_D1b' is Euclidean and NOT directly comparable.")
     _print_report(rows)
     return 0
 

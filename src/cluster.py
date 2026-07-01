@@ -21,7 +21,7 @@ import logging
 import numpy as np
 import pandas as pd
 from scipy.stats import wasserstein_distance
-from sklearn.cluster import KMeans
+from sklearn.cluster import AgglomerativeClustering, KMeans
 from sklearn.metrics import calinski_harabasz_score, silhouette_score
 
 from config import K_RANGE, RANDOM_SEED
@@ -265,6 +265,82 @@ def _cluster_wasserstein_separation(traj_arr: np.ndarray, labels: np.ndarray) ->
     return float(np.mean(dists)) if dists else 0.0
 
 
+# ---------------------------------------------------------------------------
+# P5 Slice-4: cluster ON a precomputed DTW distance (Slice 1b)
+# docs/hypotheses/p5-task1-dtw-precomputed.md
+# ---------------------------------------------------------------------------
+
+
+def _dtw_distance_matrix(traj_arr: np.ndarray) -> np.ndarray:
+    """Symmetric ``(n, n)`` pairwise DTW distance matrix over ``(n, T, D)`` trajectories.
+
+    Zero diagonal; ``D[i, j] == D[j, i] == _dtw_distance(traj_i, traj_j)``.  Built
+    once per day and reused across the precomputed K-sweep (O(n²·T²) — see the
+    fallback note in the hypothesis doc §6 if this is too slow on the panel).
+    """
+    traj_arr = np.asarray(traj_arr, dtype=float)
+    n = traj_arr.shape[0]
+    D = np.zeros((n, n), dtype=float)
+    for i in range(n):
+        for j in range(i + 1, n):
+            dist = _dtw_distance(traj_arr[i], traj_arr[j])
+            D[i, j] = dist
+            D[j, i] = dist
+    return D
+
+
+def _dtw_precomputed_sweep(
+    D: np.ndarray,
+    traj_arr: np.ndarray,
+    k_range: tuple[int, int] | None = None,
+) -> tuple[int, dict, np.ndarray]:
+    """Pick K = argmax **DTW-space** silhouette via precomputed agglomerative clustering.
+
+    Clusters with ``AgglomerativeClustering(metric='precomputed', linkage='average')``
+    on *D*, scores ``silhouette_score(D, labels, metric='precomputed')`` (same DTW
+    space it clustered in — a single honest objective, no composite weights).  CH is
+    reported on the flattened trajectory space (Euclidean approximation of the DTW
+    space), so it is internally consistent with the labels.  Returns
+    ``(best_k, metrics_at_best, best_labels)``.
+    """
+    if k_range is None:
+        k_range = K_RANGE
+    n = D.shape[0]
+    lo, hi = k_range
+    lo_eff, hi_eff = max(lo, 2), min(hi, n - 1)
+    flat = np.asarray(traj_arr, dtype=float).reshape(n, -1)
+    empty = {"silhouette": -1.0, "ch": 0.0, "wasserstein_sep": 0.0, "dtw_sep": 0.0}
+    if lo_eff > hi_eff:
+        return 1, empty, np.zeros(n, dtype=int)
+
+    best_k, best_sil, best_labels = lo_eff, -np.inf, None
+    for k in range(lo_eff, hi_eff + 1):
+        labels = AgglomerativeClustering(
+            n_clusters=k, metric="precomputed", linkage="average"
+        ).fit_predict(D)
+        if len(np.unique(labels)) < 2:
+            continue
+        sil = float(silhouette_score(D, labels, metric="precomputed"))
+        if sil > best_sil:
+            best_sil, best_k, best_labels = sil, k, labels
+
+    if best_labels is None:
+        return 1, empty, np.zeros(n, dtype=int)
+
+    metrics = {
+        "silhouette": best_sil,
+        "ch": float(calinski_harabasz_score(flat, best_labels)),
+        "wasserstein_sep": _cluster_wasserstein_separation(traj_arr, best_labels),
+        "dtw_sep": _cluster_dtw_separation(traj_arr, best_labels),
+    }
+    log.info(
+        "dtw-precomputed sweep %s → K=%d (dtw_sil=%.4f CH=%.1f wass=%.4f dtw=%.4f)",
+        k_range, best_k, best_sil, metrics["ch"],
+        metrics["wasserstein_sep"], metrics["dtw_sep"],
+    )
+    return best_k, metrics, best_labels
+
+
 def _stack_trajectories(
     trajectories: dict, index: pd.Index, n_bins: int
 ) -> np.ndarray:
@@ -388,18 +464,59 @@ def score_day(
     matrix: pd.DataFrame,
     trajectories: dict | None = None,
     k_range: tuple[int, int] | None = None,
+    method: str = "euclidean",
 ) -> dict:
     """Per-day Task-1 clustering-quality report (offline harness seam, §5/§6).
 
     Reports the daily-only Euclidean silhouette baseline AND (when trajectories
     are given) the enriched silhouette + Wasserstein/DTW separations, so the
     lift is explicit and honest.  Label-free — §3.3-safe.
+
+    Parameters
+    ----------
+    method : {"euclidean", "dtw_precomputed"}, default "euclidean"
+        "euclidean" (default) → byte-identical to the pre-Slice-4 path (Slice-1
+        enrichment when trajectories given, daily-only otherwise).
+        "dtw_precomputed" (P5 Slice-4) → cluster ON the pairwise DTW distance and
+        score silhouette in that same precomputed metric; requires *trajectories*.
     """
+    if method not in ("euclidean", "dtw_precomputed"):
+        raise ValueError(f"unknown method {method!r}; expected 'euclidean' or 'dtw_precomputed'")
+
     n = len(matrix)
-    # Daily-only baseline (reproduces the D1.b audit path).
+    # Daily-only baseline (reproduces the D1.b audit path), reported in both modes.
     daily_feats, _, _ = build_clustering_matrix(matrix, trajectories=None)
     X_daily = daily_feats.values
     sil_daily, ch_daily = _fit_metrics(X_daily, _sweep_k(X_daily, k_range) if n > 1 else 1)
+
+    if method == "dtw_precomputed":
+        if trajectories is None:
+            raise ValueError("method='dtw_precomputed' requires trajectories (falsification §4 metric-stub)")
+        _, _, traj_arr = build_clustering_matrix(matrix, trajectories)
+        if traj_arr is None:
+            raise ValueError("method='dtw_precomputed' got empty/degenerate trajectories")
+        if n <= 1:
+            return {
+                "best_k": 1, "silhouette": -1.0, "silhouette_daily": float(sil_daily),
+                "ch": 0.0, "wasserstein_sep": 0.0, "dtw_sep": 0.0,
+                "n_clusters": 1, "cluster_sizes": [n], "degenerate": True,
+            }
+        D = _dtw_distance_matrix(traj_arr)
+        best_k, best, labels = _dtw_precomputed_sweep(D, traj_arr, k_range)
+        _, sizes = np.unique(labels, return_counts=True)
+        n_clusters = len(sizes)
+        degenerate = bool(n_clusters < 2 or (sizes < 2).any())
+        return {
+            "best_k": int(best_k),
+            "silhouette": float(best["silhouette"]),
+            "silhouette_daily": float(sil_daily),
+            "ch": float(best["ch"]),
+            "wasserstein_sep": float(best["wasserstein_sep"]),
+            "dtw_sep": float(best["dtw_sep"]),
+            "n_clusters": int(n_clusters),
+            "cluster_sizes": sizes.tolist(),
+            "degenerate": degenerate,
+        }
 
     if trajectories is None:
         best_k = _sweep_k(X_daily, k_range) if n > 1 else 1

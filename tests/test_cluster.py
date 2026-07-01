@@ -19,6 +19,7 @@ from src.cluster import (
     cluster_patterns,
     _sweep_k,
     _dtw_distance,
+    _dtw_distance_matrix,
     score_day,
 )
 from src.intraday_trajectory import build_trajectory
@@ -578,3 +579,114 @@ def test_enriched_output_has_required_columns_and_labels():
     # No trajectory-summary column should surface in the human-facing explanation.
     for expl in result["pattern_explanation"]:
         assert "traj_" not in expl
+
+
+# ===========================================================================
+# Slice-4 (P5): clustering ON a precomputed DTW distance (Slice 1b)
+# docs/hypotheses/p5-task1-dtw-precomputed.md
+# ===========================================================================
+
+
+def test_dtw_distance_matrix_symmetric_zero_diagonal():
+    """_dtw_distance_matrix returns a symmetric, zero-diagonal (n,n) matrix whose
+    off-diagonal entries are > 0 for distinct trajectories and 0 for identical ones.
+    """
+    front = build_trajectory(_make_shape_group("front"), n_bins=30)
+    back = build_trajectory(_make_shape_group("back"), n_bins=30)
+    traj_arr = np.stack([front, back, front.copy()])  # rows 0 and 2 identical
+    D = _dtw_distance_matrix(traj_arr)
+
+    assert D.shape == (3, 3)
+    assert np.allclose(np.diag(D), 0.0), "diagonal must be zero"
+    assert np.allclose(D, D.T), "distance matrix must be symmetric"
+    assert D[0, 1] > 0.0, "distinct shapes must have positive DTW distance"
+    assert D[0, 2] == 0.0, "identical trajectories must have zero DTW distance"
+
+
+def _shape_cluster_fixture(rng):
+    """3 groups whose intraday SHAPE cleanly separates them (front/back/uniform).
+
+    Daily features are pure noise (so a Euclidean daily fit cannot find the
+    structure); the DTW distance between full trajectories can. Returns
+    (matrix, trajectories) on a shared RangeIndex.
+    """
+    n_per = 20
+    shapes = ["front", "back", "uniform"]
+    daily_cols = [
+        "oss_mega_amount_pct", "oss_large_amount_pct", "oss_small_amount_pct",
+        "ap_active_buy_pct", "ap_active_net_direction", "pi_time_concentration",
+    ]
+    rows, trajs = [], {}
+    ridx = 0
+    for kind in shapes:
+        for _ in range(n_per):
+            rows.append({c: float(rng.uniform(0.0, 1.0)) for c in daily_cols})
+            trajs[ridx] = build_trajectory(_make_shape_group(kind), n_bins=30)
+            ridx += 1
+    return pd.DataFrame(rows), trajs
+
+
+def test_dtw_precomputed_beats_random_silhouette():
+    """Clustering on the DTW distance recovers the 3 shape groups: the resulting
+    DTW-space silhouette must strongly beat a random labeling on the same matrix.
+
+    A stub that returns arbitrary labels (or K=1) fails this.
+    """
+    from sklearn.metrics import silhouette_score
+
+    rng = np.random.default_rng(7)
+    matrix, trajs = _shape_cluster_fixture(rng)
+
+    d = score_day(matrix, trajectories=trajs, k_range=(2, 5), method="dtw_precomputed")
+
+    # Rebuild the DTW matrix independently to score a random baseline in the same space.
+    traj_arr = np.stack([trajs[i] for i in range(len(matrix))])
+    D = _dtw_distance_matrix(traj_arr)
+    rand_labels = np.random.default_rng(0).integers(0, d["best_k"], len(matrix))
+    rand_sil = silhouette_score(D, rand_labels, metric="precomputed")
+
+    assert d["best_k"] >= 2
+    assert not d["degenerate"], f"unexpected degenerate clustering: {d['cluster_sizes']}"
+    assert d["silhouette"] > rand_sil, (
+        f"DTW-precomputed silhouette {d['silhouette']:.4f} must beat random "
+        f"labeling {rand_sil:.4f} when structure lives in intraday shape"
+    )
+    # Clean shapes → near-perfect recovery; sanity floor well above the Euclidean tier.
+    assert d["silhouette"] > 0.5
+
+
+def test_score_day_dtw_reports_required_components():
+    """score_day(method='dtw_precomputed') exposes every component the harness prints,
+    plus a non-stub Wasserstein/DTW separation.
+    """
+    rng = np.random.default_rng(11)
+    matrix, trajs = _shape_cluster_fixture(rng)
+    d = score_day(matrix, trajectories=trajs, k_range=(2, 5), method="dtw_precomputed")
+    for key in (
+        "best_k", "silhouette", "silhouette_daily", "ch",
+        "wasserstein_sep", "dtw_sep", "n_clusters", "cluster_sizes", "degenerate",
+    ):
+        assert key in d, f"score_day missing component {key!r}"
+    assert d["wasserstein_sep"] > 0.0
+    assert d["dtw_sep"] > 0.0
+
+
+def test_score_day_method_default_is_euclidean():
+    """method defaults to 'euclidean' → byte-identical to the pre-Slice-4 call, so
+    every existing caller and the production path are untouched.
+    """
+    rng = np.random.default_rng(11)
+    matrix, trajs = _shape_cluster_fixture(rng)
+    default = score_day(matrix, trajectories=trajs, k_range=(2, 5))
+    euclid = score_day(matrix, trajectories=trajs, k_range=(2, 5), method="euclidean")
+    assert default == euclid
+
+
+def test_score_day_dtw_requires_trajectories():
+    """The DTW path needs trajectories; asking for it without them fails loud
+    (never silently emits a partial Task-1 number, falsification §4 metric-stub).
+    """
+    rng = np.random.default_rng(1)
+    matrix, _ = _shape_cluster_fixture(rng)
+    with pytest.raises(ValueError):
+        score_day(matrix, trajectories=None, k_range=(2, 5), method="dtw_precomputed")
