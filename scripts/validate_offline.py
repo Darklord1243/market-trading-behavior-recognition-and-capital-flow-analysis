@@ -226,11 +226,14 @@ def _build_parquet_matrix(
     norm_universe: list[str] | None = None,
 ) -> pd.DataFrame:
     """Build a feature matrix over (labeled ∪ norm_universe) for realistic ranks."""
+    from config import RS_CADENCE_SOURCE
     from src import aggregate
     from src.ingest_parquet import (
         load_parquet,
         read_cancel_frame_parquet,
         read_deal_sizes_parquet,           # NEW (B.2)
+        read_deal_times_parquet,           # NEW (P3.3)
+        read_order_times_parquet,          # NEW (P3.3)
     )
 
     panel = _panel_keys(labeled_keys, norm_universe)
@@ -252,8 +255,16 @@ def _build_parquet_matrix(
 
     deal_lookup = read_deal_sizes_parquet(root, date, panel)     # NEW (B.2): one batch deal read
 
+    # NEW (P3.3): RS cadence event-time lookup, selected by config (snapshot → None).
+    rs_timestamps_lookup = None
+    if RS_CADENCE_SOURCE == "deal":
+        rs_timestamps_lookup = read_deal_times_parquet(root, date, panel)
+    elif RS_CADENCE_SOURCE == "order":
+        rs_timestamps_lookup = read_order_times_parquet(root, date, panel)
+
     return aggregate.build_feature_matrix(
-        df, has_cancel_table=True, cancel_lookup=cancel_lookup, deal_lookup=deal_lookup
+        df, has_cancel_table=True, cancel_lookup=cancel_lookup, deal_lookup=deal_lookup,
+        rs_timestamps_lookup=rs_timestamps_lookup,
     )
 
 

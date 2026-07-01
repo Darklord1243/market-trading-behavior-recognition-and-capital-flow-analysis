@@ -24,11 +24,8 @@ from __future__ import annotations
 
 from config import (
     CAPITAL_TYPES,
-    IMBALANCE_FULLDAY_WEIGHT,
-    IMBALANCE_SNAPSHOT_WEIGHT,
-    INTENT_BUY_PCT,
-    INTENT_IMBALANCE,
-    INTENT_SELL_PCT,
+    INTENT_NET_BAND,
+    INTENT_SELL_BAND,
     INTENTION_CLASSES,
 )
 
@@ -205,18 +202,34 @@ def score_capital_type(feat: dict) -> tuple[str, list]:
 
 
 def get_intention(feat: dict) -> str:
-    """Intent gate (baseline get_intention, verbatim thresholds).
+    """Intent gate — asymmetric net-direction band (P2-intent-b, Direction A).
 
-    Dual-source book imbalance = 0.4*first-snapshot + 0.6*full-day mean.
+    net = ap_active_buy_pct − ap_active_sell_pct
+        Positive → aggressive buy pressure; negative → aggressive sell pressure.
+        Defaults: buy_pct=0.5, sell_pct=0.5 → net=0 → T0交易 (neutral default).
+
+    Gate (asymmetric bands, calibrated against LHB validation labels):
+        net > +τ_buy   → 买入   (τ_buy  = INTENT_NET_BAND  = 0.08)
+        net < −τ_sell  → 卖出   (τ_sell = INTENT_SELL_BAND = 0.18)
+        otherwise      → T0交易 (neutral / two-sided)
+
+    Why asymmetric (P2-intent-b — docs/hypotheses/p2-intent-b-sell-precision.md):
+    the buy band is well-placed (买入 precision 0.83), but T0交易's net distribution
+    is left-skewed (median −0.04, the obp sell-lean), so a symmetric −0.08 sell cut
+    lands inside the neutral shoulder and over-fires (卖出 precision 0.27, sweeping in
+    14 true-T0 + 5 true-买入).  Widening only the sell side to −0.18 sheds that mild
+    T0 mass (true-卖出 sit deeper, median −0.185) — 卖出 precision 0.27→0.42 and T0交易
+    recall 0.48→0.76 move together; the buy branch is byte-identical.
+
+    The old AND-conjunct with blended_imbalance remains dropped (P2-intent): imbalance
+    is used only by _intent_confidence (label.py) for model weighting — it does NOT
+    gate the returned label here.
     """
     buy_pct = feat.get("ap_active_buy_pct", 0.5)
     sell_pct = feat.get("ap_active_sell_pct", 0.5)
-    imbalance = (
-        IMBALANCE_SNAPSHOT_WEIGHT * feat.get("book_imbalance", 0.0)
-        + IMBALANCE_FULLDAY_WEIGHT * feat.get("obp_imbalance_mean", 0.0)
-    )
-    if buy_pct > INTENT_BUY_PCT and imbalance > INTENT_IMBALANCE:
+    net = buy_pct - sell_pct
+    if net > INTENT_NET_BAND:
         return INTENTION_CLASSES[0]   # 买入
-    if sell_pct > INTENT_SELL_PCT and imbalance < -INTENT_IMBALANCE:
+    if net < -INTENT_SELL_BAND:
         return INTENTION_CLASSES[1]   # 卖出
     return INTENTION_CLASSES[2]       # T0交易

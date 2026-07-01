@@ -100,7 +100,7 @@ def _pi_features(group: pd.DataFrame) -> dict:
     }
 
 
-def _rs_features(group: pd.DataFrame) -> dict:
+def _rs_features(group: pd.DataFrame, rs_event_times_ms=None) -> dict:
     """Rhythm/Sequence: inter-tick interval CV, burst ratio, split similarity.
 
     Resolution-robust: uses .diff().dt.total_seconds() * 1000 so the result
@@ -112,12 +112,41 @@ def _rs_features(group: pd.DataFrame) -> dict:
     Burst definition: share of intervals strictly < RS_BURST_THRESHOLD_MS (100 ms
     by default).  Absolute threshold avoids the saturation problem of the old
     0.25*mean definition (which equals 1.0 whenever mean≈0).
+
+    Cadence source (P3.3)
+    ---------------------
+    ``rs_event_times_ms`` (default ``None``) is an optional list of **raw
+    HHMMSSmmm event-time integers** from the parquet ``deal`` (DealTime) or
+    ``order`` (OrderTime) tick stream, threaded through
+    ``aggregate.build_feature_matrix(rs_timestamps_lookup=...)`` and selected by
+    ``config.RS_CADENCE_SOURCE``.  When ≥2 distinct events are supplied they are
+    decoded via :func:`ingest_parquet._hhmmssmmm_to_ms` (boundary-correct — a raw
+    integer diff over-counts minute/second rollovers), sorted-unique, and diffed
+    to recover the **true sub-100ms** cadence.  This fixes ``rs_burst_ratio≡0`` on
+    parquet, where the snapshot ``datetime_utc`` is built from ~3 s TickTime
+    (``ingest_parquet._clean_snapshot``) and cannot carry the burst signal.
+
+    Fallback: when ``rs_event_times_ms`` is ``None``/empty or yields <2 distinct
+    events, the snapshot ``datetime_utc`` path is used — keeping the xlsx / local
+    / parquet-snapshot paths byte-for-byte backward-compatible.
     """
-    # dtype-portable millisecond intervals
-    intervals_ms = (
-        group["datetime_utc"].diff().dropna().dt.total_seconds() * 1000.0
-    )
-    intervals_ms = intervals_ms[intervals_ms >= 0]
+    intervals_ms = None
+    if rs_event_times_ms is not None and len(rs_event_times_ms) >= 2:
+        from src.ingest_parquet import _hhmmssmmm_to_ms
+        decoded = sorted(
+            {_hhmmssmmm_to_ms(int(t)) for t in rs_event_times_ms if pd.notna(t)}
+        )
+        if len(decoded) >= 2:
+            iv = pd.Series(decoded, dtype="float64").diff().dropna()
+            intervals_ms = iv[iv >= 0]
+
+    if intervals_ms is None:
+        # dtype-portable millisecond intervals from the snapshot clock (fallback)
+        intervals_ms = (
+            group["datetime_utc"].diff().dropna().dt.total_seconds() * 1000.0
+        )
+        intervals_ms = intervals_ms[intervals_ms >= 0]
+
     if len(intervals_ms) < 2:
         return {
             "rs_interval_cv": 0.0,
@@ -363,6 +392,7 @@ def compute_daily_features(
     has_cancel_table: bool = False,
     cancel_df: "pd.DataFrame | None" = None,
     deal_volumes=None,                      # NEW: per-print genuine-trade sizes (B.2)
+    rs_event_times_ms=None,                 # NEW (P3.3): raw HHMMSSmmm deal/order tick times
 ) -> dict:
     """Compute the full per-(stock, day) feature vector for one tick group.
 
@@ -378,6 +408,13 @@ def compute_daily_features(
     (stock, day), produced by ``ingest_parquet.read_deal_sizes_parquet`` and threaded
     through ``aggregate.build_feature_matrix``.  When ``None`` (default — snapshot/
     xlsx path), ``trd_size_entropy`` is 0.0 (backward-compatible).
+
+    `rs_event_times_ms` is the list of raw HHMMSSmmm deal/order tick-time integers
+    for this (stock, day), produced by ``ingest_parquet.read_deal_times_parquet`` /
+    ``read_order_times_parquet`` (selected by ``config.RS_CADENCE_SOURCE``) and
+    threaded through ``aggregate.build_feature_matrix``.  When ``None`` (default —
+    snapshot/xlsx path), RS features fall back to the snapshot ``datetime_utc``
+    clock (backward-compatible).  See ``_rs_features`` (P3.3).
     """
     feat: dict[str, float] = {}
     tick_vol = group["tick_volume"]
@@ -386,7 +423,7 @@ def compute_daily_features(
     feat.update(_oss_features(tick_vol, tick_amt))
     feat.update(_ap_features(group))
     feat.update(_pi_features(group))
-    feat.update(_rs_features(group))
+    feat.update(_rs_features(group, rs_event_times_ms=rs_event_times_ms))
     feat.update(_obp_features(group))
     feat.update(_pd_features(group))
     feat.update(_cb_features(group, has_cancel_table, cancel_df=cancel_df))

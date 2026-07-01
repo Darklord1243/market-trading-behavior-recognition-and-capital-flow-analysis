@@ -8,6 +8,8 @@ strings are the *exact* submission values required by the official spec
 
 from __future__ import annotations
 
+from typing import Literal
+
 # ---------------------------------------------------------------------------
 # Locked label vocabularies (exact submission strings)
 # ---------------------------------------------------------------------------
@@ -83,6 +85,16 @@ CB_FAST_CANCEL_MS: int = 500
 # to 1.0 when mean≈0, i.e. the dtype-bug state).  Baseline reference: 100 ms.
 RS_BURST_THRESHOLD_MS: int = 100
 
+# RS cadence source (P3.3) — which clock feeds rs_burst_ratio / rs_interval_cv /
+# rs_split_similarity on the PARQUET path:
+#   "snapshot" : snapshot datetime_utc (~3 s TickTime) — burst≡0 (the pre-P3.3 bug)
+#   "deal"     : genuine-print DealTime  (逐笔成交, Side∈{0,1}) — true sub-100ms clock
+#   "order"    : OrderTime (委托补全, all events) — true sub-100ms clock
+# xlsx / local always fall back to snapshot datetime_utc (no tick stream → lookup
+# is None).  Winner chosen by FROZEN offline gates only (never the Tianchi board) —
+# see docs/hypotheses/p3.3-rs-cadence-resource.md.
+RS_CADENCE_SOURCE: Literal["snapshot", "deal", "order"] = "snapshot"
+
 # ---------------------------------------------------------------------------
 # TRD — deal-stream print-size heterogeneity (Feature B.2)
 # ---------------------------------------------------------------------------
@@ -103,3 +115,26 @@ INTENT_IMBALANCE = 0.08
 # Dual-source imbalance blend: 0.4 * first-snapshot + 0.6 * full-day mean.
 IMBALANCE_SNAPSHOT_WEIGHT = 0.4
 IMBALANCE_FULLDAY_WEIGHT = 0.6
+# Band-only net-direction gate (Direction A — P2-intent fix, Phase B).
+# net = ap_active_buy_pct − ap_active_sell_pct; symmetric around 0.
+# Calibrated from the 20260623 panel net-direction distribution, validated
+# against LHB labels (n=64) — NOT against any Tianchi/platform score
+# (compliance hard-rule #3).  Selection rule: the human lead fixed the
+# acceptance target at 20260623 T0 share ∈ [40%,55%] (directional ~44-56%);
+# of the swept grid {.04,.06,.08,.10,.12,.14,.16,.20}, τ=0.08 is the UNIQUE
+# value landing in that band (T0=49.5%, directional 50.5%) and lifts intention
+# weighted-F1 to 0.5539 (baseline 0.4242; 买入 recall 0.185→0.519).  A larger
+# τ=0.14 scores higher raw F1 (0.6122) but collapses 0623 directional to 25%,
+# violating the distribution target, so it is deliberately not chosen.
+INTENT_NET_BAND = 0.08
+# Asymmetric sell-side band (P2-intent-b — docs/hypotheses/p2-intent-b-sell-precision.md).
+# The buy band (INTENT_NET_BAND) is well-placed (买入 precision 0.83), but T0交易's net
+# distribution is left-skewed (median −0.04, p25 −0.14, the obp sell-lean), so a SYMMETRIC
+# −0.08 sell cut lands inside the neutral shoulder and over-fires: 卖出 precision 0.27,
+# with 14 true-T0 + 5 true-买入 swept in as false sells.  Widening only the sell side to
+# −0.18 sheds that mild-negative T0 mass while keeping the deep real sells (true-卖出
+# median −0.185).  Calibrated on LHB labels (joint sweep peak on BOTH n=64 and n=76, a
+# plateau not a spike) — NOT on any Tianchi/platform score (compliance hard-rule #3).
+# Effect: intention weighted-F1  n=64 0.5539→0.6271, n=76 0.5772→0.6480; 卖出 precision
+# 0.27→0.42 AND T0交易 recall 0.48→0.76 move together; buy branch byte-identical.
+INTENT_SELL_BAND = 0.18

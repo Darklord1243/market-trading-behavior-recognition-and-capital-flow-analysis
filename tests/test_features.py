@@ -571,6 +571,79 @@ def test_rs_split_similarity_present(dtype):
 
 
 # ---------------------------------------------------------------------------
+# P3.3 — RS cadence re-sourced from parquet deal/order tick times
+# (TDD: written BEFORE implementation)
+# ---------------------------------------------------------------------------
+
+def test_rs_features_external_event_times_override_snapshot():
+    """rs_event_times_ms (parquet deal/order tick times) override snapshot datetime_utc.
+
+    The snapshot group is a uniform 30 s cadence (→ burst=0 on its own).  The
+    external event times are a 50 ms cadence in HHMMSSmmm form → every interval is
+    50 ms < 100 ms → burst=1.0, cv=0, split_sim=1.0.  burst=1.0 therefore proves
+    the external series is used and the snapshot path is bypassed.  This is the
+    core P3.3 fix: snapshot TickTime is ~3 s so rs_burst_ratio≡0 on parquet.
+    """
+    from src.features import _rs_features
+    g = _rs_group_uniform_30s(n=5)               # snapshot alone → burst 0.0
+    ext = [93000000, 93000050, 93000100, 93000150, 93000200]   # .000 .050 .100 .150 .200
+    f = _rs_features(g, rs_event_times_ms=ext)
+    assert f["rs_burst_ratio"] == pytest.approx(1.0, abs=1e-6)
+    assert f["rs_interval_cv"] == pytest.approx(0.0, abs=1e-6)
+    assert f["rs_split_similarity"] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_rs_features_external_times_respect_minute_boundary():
+    """External HHMMSSmmm times are decoded via _hhmmssmmm_to_ms, not raw int diff.
+
+    Three events straddle a minute boundary: 09:30:59.900 → .950 → 09:31:00.000,
+    two true 50 ms gaps (both burst).  A naive HHMMSSmmm integer subtraction makes
+    the second gap 40050 (> 100 ms, no burst) → burst would be 0.5.  burst=1.0
+    proves both intervals are boundary-correct ms decodes.
+    """
+    from src.features import _rs_features
+    g = _rs_group_uniform_30s(n=3)
+    ext = [93059900, 93059950, 93100000]         # .900 .950 then next-minute .000
+    f = _rs_features(g, rs_event_times_ms=ext)
+    assert f["rs_burst_ratio"] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_rs_features_fallback_to_snapshot_when_no_external():
+    """rs_event_times_ms=None or [] → snapshot datetime_utc path (xlsx/local compat)."""
+    from src.features import _rs_features
+    g_fast = _rs_group_uniform_50ms(n=6)         # snapshot 50 ms → burst 1.0
+    assert _rs_features(g_fast, rs_event_times_ms=None)["rs_burst_ratio"] == pytest.approx(1.0, abs=1e-6)
+    g_slow = _rs_group_uniform_30s(n=5)          # snapshot 30 s → burst 0.0
+    assert _rs_features(g_slow, rs_event_times_ms=[])["rs_burst_ratio"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_rs_features_external_too_few_falls_back_to_snapshot():
+    """<2 external events → fall back to snapshot datetime_utc (not zeros)."""
+    from src.features import _rs_features
+    g = _rs_group_uniform_50ms(n=6)              # snapshot 50 ms → burst 1.0
+    f = _rs_features(g, rs_event_times_ms=[93000000])   # single event
+    assert f["rs_burst_ratio"] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_compute_daily_features_threads_rs_event_times(synthetic_group):
+    """compute_daily_features forwards rs_event_times_ms into _rs_features.
+
+    synthetic_group's datetime_utc spans hours (snapshot burst=0); a 50 ms external
+    cadence flips burst to 1.0, proving the kwarg is threaded end-to-end.
+    """
+    ext = [93000000, 93000050, 93000100, 93000150]
+    feat = compute_daily_features(synthetic_group, rs_event_times_ms=ext)
+    assert feat["rs_burst_ratio"] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_compute_daily_features_no_rs_event_times_uses_snapshot(synthetic_group):
+    """Backward-compat: no rs_event_times_ms kwarg → snapshot path unchanged."""
+    feat = compute_daily_features(synthetic_group)        # no kwarg
+    # synthetic_group spans hours → no sub-100ms intervals → burst 0.0
+    assert feat["rs_burst_ratio"] == pytest.approx(0.0, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
 # Track L-c — true order→cancel latency (TDD: Lc.1 written BEFORE implementation)
 # ---------------------------------------------------------------------------
 
