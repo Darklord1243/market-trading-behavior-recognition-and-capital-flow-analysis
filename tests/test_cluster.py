@@ -15,7 +15,13 @@ import pytest
 from sklearn.metrics import silhouette_score
 
 import config
-from src.cluster import cluster_patterns, _sweep_k
+from src.cluster import (
+    cluster_patterns,
+    _sweep_k,
+    _dtw_distance,
+    score_day,
+)
+from src.intraday_trajectory import build_trajectory
 
 
 # ---------------------------------------------------------------------------
@@ -450,3 +456,125 @@ def test_naming_guarantees_two_labels_when_k_ge_2():
         "When two clusters share the same primary dominant feature, the tie-break "
         "must reassign one to its secondary-axis label."
     )
+
+
+# ===========================================================================
+# Slice-1 (P5): metric alignment — DTW / Wasserstein + trajectory enrichment
+# ===========================================================================
+
+
+def test_dtw_identical_zero_shifted_positive():
+    """DTW of a series with itself is 0; DTW of a series vs its time-shift is > 0."""
+    rng = np.random.default_rng(1)
+    a = rng.normal(size=(30, 3))
+    b = np.roll(a, shift=5, axis=0)  # time-shifted copy
+    assert _dtw_distance(a, a) == 0.0
+    assert _dtw_distance(a, b) > 0.0
+    # DTW is symmetric.
+    assert abs(_dtw_distance(a, b) - _dtw_distance(b, a)) < 1e-9
+
+
+def _make_shape_group(kind: str, n_ticks: int = 120):
+    """Snapshot-style frame whose intraday turnover SHAPE encodes `kind`."""
+    third = n_ticks // 3
+    if kind == "front":
+        amt = [10.0] * third + [0.2] * (n_ticks - third)
+    elif kind == "back":
+        amt = [0.2] * (n_ticks - third) + [10.0] * third
+    else:  # uniform
+        amt = [3.0] * n_ticks
+    price = [10.0 + 0.001 * i for i in range(n_ticks)]
+    px = pd.Series(price, dtype=float)
+    return pd.DataFrame(
+        {
+            "stock_code": "X",
+            "transaction_date": "20260616",
+            "tick_amount": amt,
+            "totalbidvolume": [100.0] * n_ticks,
+            "totalaskvolume": [100.0] * n_ticks,
+            "price": px,
+            "price_change": px.diff().fillna(0.0),
+        }
+    )
+
+
+def _enrichment_fixture(rng):
+    """3 groups whose DAILY aggregate is ~pure noise but whose intraday SHAPE
+    cleanly separates them (front / back / uniform turnover).
+
+    Returns (matrix, trajectories) keyed on a shared RangeIndex.
+    """
+    n_per = 20
+    shapes = ["front", "back", "uniform"]
+    daily_cols = [
+        "oss_mega_amount_pct", "oss_large_amount_pct", "oss_small_amount_pct",
+        "ap_active_buy_pct", "ap_active_net_direction", "pi_time_concentration",
+    ]
+    rows, trajs = [], {}
+    ridx = 0
+    for kind in shapes:
+        for _ in range(n_per):
+            # Daily features: identical distribution across all groups (noise).
+            rows.append({c: float(rng.uniform(0.0, 1.0)) for c in daily_cols})
+            trajs[ridx] = build_trajectory(_make_shape_group(kind), n_bins=30)
+            ridx += 1
+    matrix = pd.DataFrame(rows)
+    return matrix, trajs
+
+
+def test_enrichment_beats_euclidean_only_silhouette():
+    """When daily features are noise but intraday shape carries the structure,
+    trajectory-enriched clustering must score a strictly higher silhouette than
+    daily-only Euclidean clustering, and report non-trivial Wasserstein/DTW.
+    """
+    rng = np.random.default_rng(7)
+    matrix, trajs = _enrichment_fixture(rng)
+
+    daily_only = score_day(matrix, trajectories=None, k_range=(2, 5))
+    enriched = score_day(matrix, trajectories=trajs, k_range=(2, 5))
+
+    assert enriched["silhouette"] > daily_only["silhouette"], (
+        f"enriched silhouette {enriched['silhouette']:.4f} must beat daily-only "
+        f"{daily_only['silhouette']:.4f} when structure lives in intraday shape"
+    )
+    assert enriched["wasserstein_sep"] > 0.0
+    assert enriched["dtw_sep"] > 0.0
+    assert enriched["best_k"] >= 2
+
+
+def test_score_day_reports_required_components():
+    """score_day exposes every per-day component the offline harness reports."""
+    rng = np.random.default_rng(11)
+    matrix, trajs = _enrichment_fixture(rng)
+    d = score_day(matrix, trajectories=trajs, k_range=(2, 5))
+    for key in (
+        "best_k", "silhouette", "silhouette_daily", "ch",
+        "wasserstein_sep", "dtw_sep", "n_clusters", "degenerate",
+    ):
+        assert key in d, f"score_day missing component {key!r}"
+
+
+def test_trajectories_none_is_byte_identical():
+    """Passing trajectories=None must reproduce the no-arg (daily-only) output
+    exactly — the production main.py path is unchanged this slice.
+    """
+    rng = np.random.default_rng(3)
+    df = _make_blobs(n_per_cluster=15, n_clusters=3, rng=rng)
+    a = cluster_patterns(df, k_range=(2, 5))
+    b = cluster_patterns(df, trajectories=None, k_range=(2, 5))
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_enriched_output_has_required_columns_and_labels():
+    """cluster_patterns with trajectories keeps the P5.1b contract:
+    required columns, index preserved, ≥2 distinct labels when K≥2.
+    """
+    rng = np.random.default_rng(5)
+    matrix, trajs = _enrichment_fixture(rng)
+    result = cluster_patterns(matrix, trajectories=trajs, k_range=(2, 5))
+    assert list(result.columns) == ["pattern_type", "pattern_explanation"]
+    assert list(result.index) == list(matrix.index)
+    assert result["pattern_type"].nunique() >= 2
+    # No trajectory-summary column should surface in the human-facing explanation.
+    for expl in result["pattern_explanation"]:
+        assert "traj_" not in expl

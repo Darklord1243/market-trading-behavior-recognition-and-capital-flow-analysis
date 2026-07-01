@@ -20,11 +20,20 @@ import logging
 
 import numpy as np
 import pandas as pd
+from scipy.stats import wasserstein_distance
 from sklearn.cluster import KMeans
 from sklearn.metrics import calinski_harabasz_score, silhouette_score
 
 from config import K_RANGE, RANDOM_SEED
+from src.intraday_trajectory import SUMMARY_COLS, N_SERIES, summary_features
 from src.normalize import normalize_matrix, EXCLUDE
+
+# Composite K-sweep weights (P5, Slice 1). Fixed global constants — NOT tuned to
+# any label or board score (docs/hypotheses/p5-task1-metric-alignment.md §2.5).
+# Euclidean silhouette stays the primary term; the two intraday board components
+# (Wasserstein / DTW separation) are equal secondary nudges.
+_WASS_WEIGHT = 0.25
+_DTW_WEIGHT = 0.25
 
 log = logging.getLogger(__name__)
 
@@ -196,9 +205,254 @@ def _sweep_k(X: np.ndarray, k_range: tuple[int, int] | None = None) -> int:
     return best_k
 
 
+# ---------------------------------------------------------------------------
+# P5 Slice-1: intraday metric alignment (DTW / Wasserstein) + enrichment
+# ---------------------------------------------------------------------------
+
+
+def _dtw_distance(a: np.ndarray, b: np.ndarray) -> float:
+    """Classic O(n²) multivariate DTW between two ``(T, D)`` trajectories.
+
+    Local cost is the Euclidean distance between per-bin vectors; pure numpy,
+    no external dependency.  Identical series → 0; a time-shifted copy → > 0.
+    """
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    na, nb = a.shape[0], b.shape[0]
+    if na == 0 or nb == 0:
+        return 0.0
+    acc = np.full((na + 1, nb + 1), np.inf)
+    acc[0, 0] = 0.0
+    for i in range(1, na + 1):
+        ai = a[i - 1]
+        for j in range(1, nb + 1):
+            cost = float(np.linalg.norm(ai - b[j - 1]))
+            acc[i, j] = cost + min(acc[i - 1, j], acc[i, j - 1], acc[i - 1, j - 1])
+    return float(acc[na, nb])
+
+
+def _cluster_dtw_separation(traj_arr: np.ndarray, labels: np.ndarray) -> float:
+    """Mean pairwise DTW between cluster **centroid** trajectories (↑ = better).
+
+    Centroid = per-bin mean trajectory of the cluster's members.  Returns 0.0
+    when fewer than 2 clusters exist.
+    """
+    cids = [c for c in np.unique(labels)]
+    if len(cids) < 2:
+        return 0.0
+    centroids = [traj_arr[labels == c].mean(axis=0) for c in cids]
+    dists = [
+        _dtw_distance(centroids[i], centroids[j])
+        for i in range(len(centroids))
+        for j in range(i + 1, len(centroids))
+    ]
+    return float(np.mean(dists)) if dists else 0.0
+
+
+def _cluster_wasserstein_separation(traj_arr: np.ndarray, labels: np.ndarray) -> float:
+    """Mean pairwise Wasserstein distance between cluster turnover-share
+    distributions (trajectory series 0), ↑ = better.  0.0 if < 2 clusters.
+    """
+    cids = [c for c in np.unique(labels)]
+    if len(cids) < 2:
+        return 0.0
+    pooled = [traj_arr[labels == c][:, :, 0].ravel() for c in cids]
+    dists = [
+        wasserstein_distance(pooled[i], pooled[j])
+        for i in range(len(pooled))
+        for j in range(i + 1, len(pooled))
+    ]
+    return float(np.mean(dists)) if dists else 0.0
+
+
+def _stack_trajectories(
+    trajectories: dict, index: pd.Index, n_bins: int
+) -> np.ndarray:
+    """Align a ``{index_key: (n_bins, N_SERIES)}`` dict to *index* → ``(n, n_bins, N_SERIES)``.
+
+    Missing keys become an all-zero trajectory (a stock with no snapshot shape).
+    """
+    out = np.zeros((len(index), n_bins, N_SERIES), dtype=float)
+    for i, key in enumerate(index):
+        arr = trajectories.get(key)
+        if arr is not None and np.asarray(arr).shape == (n_bins, N_SERIES):
+            out[i] = arr
+    return out
+
+
+def _traj_summary_frame(trajectories: dict, index: pd.Index) -> pd.DataFrame:
+    """Per-row trajectory-shape summary features (SUMMARY_COLS), aligned to *index*."""
+    rows = []
+    for key in index:
+        arr = trajectories.get(key)
+        if arr is None:
+            rows.append({c: 0.0 for c in SUMMARY_COLS})
+        else:
+            rows.append(summary_features(np.asarray(arr, dtype=float)))
+    return pd.DataFrame(rows, index=index, columns=SUMMARY_COLS)
+
+
+def build_clustering_matrix(
+    matrix: pd.DataFrame,
+    trajectories: dict | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray | None]:
+    """Build the rank-normalized clustering matrix (H1 seam), optionally enriched
+    with trajectory-shape summary features.
+
+    Returns
+    -------
+    (clustering_feats, naming_feats, traj_arr)
+        ``clustering_feats`` — normalized feature matrix KMeans fits on (EXCLUDE
+        columns dropped; SUMMARY_COLS appended when *trajectories* is given).
+        ``naming_feats`` — ``clustering_feats`` minus SUMMARY_COLS, so centroid
+        naming reads only the original finance features (traj_* never named).
+        ``traj_arr`` — ``(n, n_bins, N_SERIES)`` aligned trajectories, or None.
+
+    With ``trajectories is None`` the result is byte-identical to the pre-P5 path.
+    """
+    feats = matrix.select_dtypes("number").fillna(0.0)
+    traj_arr = None
+    if trajectories is not None and len(matrix) > 0:
+        summary = _traj_summary_frame(trajectories, matrix.index)
+        feats = pd.concat([feats, summary], axis=1)
+        n_bins = next(iter(trajectories.values())).shape[0] if trajectories else 0
+        if n_bins:
+            traj_arr = _stack_trajectories(trajectories, matrix.index, n_bins)
+
+    normed = normalize_matrix(feats).select_dtypes("number").fillna(0.0)
+    clustering_feats = normed.drop(columns=[c for c in EXCLUDE if c in normed.columns])
+    naming_feats = clustering_feats.drop(
+        columns=[c for c in SUMMARY_COLS if c in clustering_feats.columns]
+    )
+    return clustering_feats, naming_feats, traj_arr
+
+
+def _composite_sweep(
+    X: np.ndarray,
+    traj_arr: np.ndarray,
+    k_range: tuple[int, int] | None = None,
+) -> tuple[int, dict]:
+    """Pick K maximizing ``sil + 0.25*norm_wass + 0.25*norm_dtw``.
+
+    silhouette is Euclidean on the (enriched) matrix *X*; Wasserstein/DTW
+    separations are computed on *traj_arr* grouped by each K's labels.  wass/dtw
+    are min-max normalized across the K candidates only (within-day, no leakage).
+    Returns (best_k, metrics_at_best).
+    """
+    if k_range is None:
+        k_range = K_RANGE
+    n = X.shape[0]
+    lo, hi = k_range
+    lo_eff, hi_eff = max(lo, 2), min(hi, n - 1)
+    if lo_eff > hi_eff:
+        return 1, {"silhouette": -1.0, "ch": 0.0, "wasserstein_sep": 0.0, "dtw_sep": 0.0}
+
+    cands = []
+    for k in range(lo_eff, hi_eff + 1):
+        km = KMeans(n_clusters=k, random_state=RANDOM_SEED, n_init=10)
+        labels = km.fit_predict(X)
+        if len(np.unique(labels)) < 2:
+            continue
+        cands.append({
+            "k": k,
+            "silhouette": float(silhouette_score(X, labels)),
+            "ch": float(calinski_harabasz_score(X, labels)),
+            "wasserstein_sep": _cluster_wasserstein_separation(traj_arr, labels),
+            "dtw_sep": _cluster_dtw_separation(traj_arr, labels),
+        })
+    if not cands:
+        return 1, {"silhouette": -1.0, "ch": 0.0, "wasserstein_sep": 0.0, "dtw_sep": 0.0}
+
+    def _minmax(vals):
+        lo_v, hi_v = min(vals), max(vals)
+        rng = hi_v - lo_v
+        return [0.0 if rng == 0 else (v - lo_v) / rng for v in vals]
+
+    nw = _minmax([c["wasserstein_sep"] for c in cands])
+    nd = _minmax([c["dtw_sep"] for c in cands])
+    best_i, best_score = 0, -np.inf
+    for i, c in enumerate(cands):
+        score = c["silhouette"] + _WASS_WEIGHT * nw[i] + _DTW_WEIGHT * nd[i]
+        if score > best_score:
+            best_score, best_i = score, i
+    best = cands[best_i]
+    log.info(
+        "composite sweep %s → K=%d (sil=%.4f CH=%.1f wass=%.4f dtw=%.4f)",
+        k_range, best["k"], best["silhouette"], best["ch"],
+        best["wasserstein_sep"], best["dtw_sep"],
+    )
+    return best["k"], best
+
+
+def score_day(
+    matrix: pd.DataFrame,
+    trajectories: dict | None = None,
+    k_range: tuple[int, int] | None = None,
+) -> dict:
+    """Per-day Task-1 clustering-quality report (offline harness seam, §5/§6).
+
+    Reports the daily-only Euclidean silhouette baseline AND (when trajectories
+    are given) the enriched silhouette + Wasserstein/DTW separations, so the
+    lift is explicit and honest.  Label-free — §3.3-safe.
+    """
+    n = len(matrix)
+    # Daily-only baseline (reproduces the D1.b audit path).
+    daily_feats, _, _ = build_clustering_matrix(matrix, trajectories=None)
+    X_daily = daily_feats.values
+    sil_daily, ch_daily = _fit_metrics(X_daily, _sweep_k(X_daily, k_range) if n > 1 else 1)
+
+    if trajectories is None:
+        best_k = _sweep_k(X_daily, k_range) if n > 1 else 1
+        X = X_daily
+        wass = dtw = 0.0
+        sil, ch = sil_daily, ch_daily
+    else:
+        clustering_feats, _, traj_arr = build_clustering_matrix(matrix, trajectories)
+        X = clustering_feats.values
+        if n > 1:
+            best_k, best = _composite_sweep(X, traj_arr, k_range)
+            sil, ch, wass, dtw = (
+                best["silhouette"], best["ch"],
+                best["wasserstein_sep"], best["dtw_sep"],
+            )
+        else:
+            best_k, sil, ch, wass, dtw = 1, sil_daily, ch_daily, 0.0, 0.0
+
+    # Final fit for cluster sizes + degeneracy flag.
+    if n > 1 and best_k >= 2:
+        labels = KMeans(n_clusters=best_k, random_state=RANDOM_SEED, n_init=10).fit_predict(X)
+    else:
+        labels = np.zeros(n, dtype=int)
+    _, sizes = np.unique(labels, return_counts=True)
+    n_clusters = len(sizes)
+    degenerate = bool(n_clusters < 2 or (sizes < 2).any())
+    return {
+        "best_k": int(best_k),
+        "silhouette": float(sil),
+        "silhouette_daily": float(sil_daily),
+        "ch": float(ch),
+        "wasserstein_sep": float(wass),
+        "dtw_sep": float(dtw),
+        "n_clusters": int(n_clusters),
+        "cluster_sizes": sizes.tolist(),
+        "degenerate": degenerate,
+    }
+
+
+def _fit_metrics(X: np.ndarray, k: int) -> tuple[float, float]:
+    """Silhouette + CH for a KMeans fit at *k* (helper for score_day baseline)."""
+    if X.shape[0] <= 1 or k < 2:
+        return -1.0, 0.0
+    labels = KMeans(n_clusters=k, random_state=RANDOM_SEED, n_init=10).fit_predict(X)
+    if len(np.unique(labels)) < 2:
+        return -1.0, 0.0
+    return float(silhouette_score(X, labels)), float(calinski_harabasz_score(X, labels))
+
+
 def cluster_patterns(
     matrix: pd.DataFrame,
     k_range: tuple[int, int] | None = None,
+    trajectories: dict | None = None,
 ) -> pd.DataFrame:
     """Cluster (stock, day) rows and assign an interpretable pattern per row.
 
@@ -212,6 +466,12 @@ def cluster_patterns(
     k_range : (min_k, max_k) inclusive, optional.
         Override the K sweep range; default is config.K_RANGE.
         Exposed here so callers (mainly tests) can plant a known K.
+    trajectories : dict, optional (P5 Slice-1).
+        ``{index_key: (n_bins, N_SERIES) ndarray}`` intraday trajectories aligned
+        to ``matrix.index``.  When given, the clustering matrix is enriched with
+        trajectory-shape summary features and K is chosen by the composite
+        (silhouette + Wasserstein + DTW) sweep.  When ``None`` (default, and the
+        production main.py path this slice) behavior is byte-identical to pre-P5.
 
     Returns
     -------
@@ -219,15 +479,12 @@ def cluster_patterns(
         Same index as `matrix`; columns: pattern_type, pattern_explanation.
     """
     n = len(matrix)
-    feats = matrix.select_dtypes("number").fillna(0.0)
 
-    # --- Rank-normalize (H1 dependency) ---
-    normed = normalize_matrix(feats).select_dtypes("number").fillna(0.0)
-
-    # Drop EXCLUDE columns (imported from src.normalize — not hard-coded) so that
-    # raw-scale columns like n_ticks (~thousands) do not dominate Euclidean distance
-    # in KMeans, and do not appear as dominant features in centroid naming.
-    clustering_feats = normed.drop(columns=[c for c in EXCLUDE if c in normed.columns])
+    # --- Rank-normalize (H1 dependency) + optional trajectory enrichment (P5) ---
+    # clustering_feats: what KMeans fits on (EXCLUDE dropped; traj_* appended when
+    # trajectories given).  naming_feats: clustering_feats minus traj_* so centroid
+    # naming reads only the original finance features.
+    clustering_feats, naming_feats, traj_arr = build_clustering_matrix(matrix, trajectories)
     X = clustering_feats.values
 
     # --- K=1 fast path ---
@@ -235,7 +492,10 @@ def cluster_patterns(
         log.info("n=%d ≤ 1; K=1 path", n)
         labels = np.zeros(n, dtype=int)
     else:
-        k = _sweep_k(X, k_range=k_range)
+        if traj_arr is None:
+            k = _sweep_k(X, k_range=k_range)
+        else:
+            k, _ = _composite_sweep(X, traj_arr, k_range=k_range)
         if k <= 1:
             labels = np.zeros(n, dtype=int)
         else:
@@ -243,8 +503,9 @@ def cluster_patterns(
             labels = km.fit_predict(X)
             log.info("KMeans: %d clusters over %d samples", k, n)
 
-    # --- Centroid-driven naming (uses clustering_feats, not normed, so EXCLUDE cols
+    # --- Centroid-driven naming (uses naming_feats, so EXCLUDE + traj_* cols
     #     are invisible to argmax and lexicon matching) ---
+    clustering_feats = naming_feats
     col_names = list(clustering_feats.columns)
 
     # P5.1b: compute global mean over ALL rows for relative dominance naming
