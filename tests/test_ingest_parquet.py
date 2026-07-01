@@ -414,3 +414,51 @@ def test_read_order_times_parquet_missing_stock_is_empty(tmp_path):
     root = write_tiny_parquet(str(tmp_path))
     lk = read_order_times_parquet(root, _DATE, ["000003.SZ"])   # not in fixture
     assert lk[("000003.SZ", _DATE)] == []
+
+
+# ---------------------------------------------------------------------------
+# Slice 5C — read_cancel_frames_parquet: ONE batch `order` read for all keys,
+# per-stock slices byte-identical to per-stock read_cancel_frame_parquet.
+# (gate perf: kills the 91%-of-runtime per-stock order rescans.)
+# ---------------------------------------------------------------------------
+
+def test_read_cancel_frames_parquet_matches_single(tmp_path):
+    """The batch cancel lookup is byte-identical, per stock, to the per-stock read.
+
+    This is the parity contract the whole slice rests on: capital/intention gates
+    must be unchanged, so every frame the batch path returns must .equals() the
+    frame the existing single-stock read_cancel_frame_parquet returns.
+    """
+    from src.ingest_parquet import (
+        read_cancel_frame_parquet,
+        read_cancel_frames_parquet,
+    )
+    root = write_tiny_parquet(str(tmp_path))
+    codes = ["000001.SZ", "000002.SZ", "600000.SH"]
+
+    batch = read_cancel_frames_parquet(root, _DATE, codes)
+
+    for code in codes:
+        single = read_cancel_frame_parquet(root, _DATE, code)
+        assert (code, _DATE) in batch, f"missing {code} in batch lookup"
+        got = batch[(code, _DATE)]
+        assert got.equals(single), (
+            f"batch cancel frame for {code} differs from single read\n"
+            f"batch=\n{got}\nsingle=\n{single}"
+        )
+
+
+def test_read_cancel_frames_parquet_missing_stock_is_empty(tmp_path):
+    """A requested stock with no cancels (or no order rows) maps to an empty frame
+    carrying the cancel-frame column contract — same as the single read."""
+    from src.ingest_parquet import (
+        _CANCEL_EMPTY_COLS,
+        read_cancel_frame_parquet,
+        read_cancel_frames_parquet,
+    )
+    root = write_tiny_parquet(str(tmp_path))
+    lk = read_cancel_frames_parquet(root, _DATE, ["000003.SZ"])  # not in fixture
+    got = lk[("000003.SZ", _DATE)]
+    assert got.empty
+    assert list(got.columns) == _CANCEL_EMPTY_COLS
+    assert got.equals(read_cancel_frame_parquet(root, _DATE, "000003.SZ"))

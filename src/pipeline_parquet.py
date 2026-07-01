@@ -105,7 +105,7 @@ def build_feature_matrix_for_panel(
     from src import aggregate
     from src.ingest_parquet import (
         load_parquet,
-        read_cancel_frame_parquet,
+        read_cancel_frames_parquet,
         read_deal_sizes_parquet,
         read_deal_times_parquet,           # NEW (P3.3)
         read_order_times_parquet,          # NEW (P3.3)
@@ -134,18 +134,19 @@ def build_feature_matrix_for_panel(
             len(missing), len(stock_codes), date, missing[:10],
         )
 
-    # Build cancel_lookup for present codes only (avoid wasted reads).
-    cancel_lookup: dict = {}
-    for code in present_codes:
-        try:
-            cancel_lookup[(code, str(date))] = read_cancel_frame_parquet(root, date, code)
-        except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "build_feature_matrix_for_panel: cancel read failed %s/%s: %s",
-                date, code, exc,
-            )
-
     present = list(present_codes)
+
+    # Build cancel_lookup for present codes only (avoid wasted reads) — ONE batch
+    # `order` read for all codes, not a per-stock rescan (Slice 5C gate-perf fix).
+    try:
+        cancel_lookup = read_cancel_frames_parquet(root, date, present)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "build_feature_matrix_for_panel: batch cancel read failed %s: %s",
+            date, exc,
+        )
+        cancel_lookup = {}
+
     deal_lookup = read_deal_sizes_parquet(root, date, present)
 
     # NEW (P3.3): RS cadence event-time lookup, selected by config (snapshot → None).
