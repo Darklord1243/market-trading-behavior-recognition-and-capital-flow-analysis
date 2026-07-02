@@ -24,7 +24,12 @@ from scipy.stats import wasserstein_distance
 from sklearn.cluster import AgglomerativeClustering, KMeans
 from sklearn.metrics import calinski_harabasz_score, silhouette_score
 
-from config import K_RANGE, RANDOM_SEED
+from config import (
+    K_RANGE,
+    RANDOM_SEED,
+    TASK1_MIN_CLUSTER_SIZE,
+    TASK1_MAX_CLUSTER_SHARE,
+)
 from src.intraday_trajectory import SUMMARY_COLS, N_SERIES, summary_features
 from src.normalize import normalize_matrix, EXCLUDE
 
@@ -203,6 +208,117 @@ def _sweep_k(X: np.ndarray, k_range: tuple[int, int] | None = None) -> int:
 
     log.info("K sweep %s → best K=%d (sil=%.4f, CH=%.1f)", k_range, best_k, best_sil, best_ch)
     return best_k
+
+
+def _sweep_k_constrained(
+    X: np.ndarray,
+    k_range: tuple[int, int] | None = None,
+    min_size: int | None = None,
+    max_share: float | None = None,
+) -> tuple[int, dict]:
+    """Balance-first K-sweep (P5 Slice-6): argmax silhouette over FEASIBLE K only.
+
+    Identical to :func:`_sweep_k` (same KMeans fit, ``RANDOM_SEED``, ``n_init=10``,
+    silhouette-then-CH tie-break) except a candidate K is **rejected before its
+    silhouette is compared** when its partition is degenerate:
+
+      * fewer than 2 distinct clusters (KMeans collapsed labels), OR
+      * ``min(cluster_sizes) < min_size`` (a singleton is not a behavioral mode), OR
+      * ``max(cluster_sizes) / n > max_share`` (one dominant cluster — the Slice-4
+        degeneracy pathology in Euclidean space).
+
+    Because the feasible set is a **subset** of the K :func:`_sweep_k` ranks, the
+    selected silhouette is ≤ the legacy silhouette pointwise (never higher — see the
+    hypothesis doc §2.2).  This selects for *non-degeneracy*, not for a higher score.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Rank-normalized daily feature matrix, shape (n_samples, n_features).
+    k_range : (min_k, max_k) inclusive, default config.K_RANGE.
+    min_size : smallest admissible cluster, default config.TASK1_MIN_CLUSTER_SIZE.
+    max_share : max admissible single-cluster share of n, default
+        config.TASK1_MAX_CLUSTER_SHARE.
+
+    Returns
+    -------
+    (best_k, info)
+        ``best_k`` — the feasible argmax-silhouette K, or 1 if NO K is feasible.
+        ``info`` — dict with ``feasible_k_count`` (int), ``rejected_reason``
+        (str|None — set only when best_k falls back to 1), ``silhouette``, ``ch``,
+        ``cluster_sizes`` (of the selected K; ``[n]`` when best_k == 1).
+    """
+    if k_range is None:
+        k_range = K_RANGE
+    if min_size is None:
+        min_size = TASK1_MIN_CLUSTER_SIZE
+    if max_share is None:
+        max_share = TASK1_MAX_CLUSTER_SHARE
+
+    n = X.shape[0]
+    lo, hi = k_range
+    lo_eff = max(lo, 2)
+    hi_eff = min(hi, n - 1)
+
+    def _fallback(reason: str) -> tuple[int, dict]:
+        return 1, {
+            "feasible_k_count": 0,
+            "rejected_reason": reason,
+            "silhouette": -1.0,
+            "ch": 0.0,
+            "cluster_sizes": [n],
+        }
+
+    if lo_eff > hi_eff:
+        log.info("Constrained sweep: no k>=2 in range %s for n=%d; K=1", k_range, n)
+        return _fallback(f"no k>=2 feasible in range {k_range} for n={n}")
+
+    best_k = None
+    best_sil = -2.0
+    best_ch = 0.0
+    best_sizes: list[int] = [n]
+    feasible = 0
+    rejects: list[str] = []
+
+    for k in range(lo_eff, hi_eff + 1):
+        km = KMeans(n_clusters=k, random_state=RANDOM_SEED, n_init=10)
+        labels = km.fit_predict(X)
+        _, sizes = np.unique(labels, return_counts=True)
+        if len(sizes) < 2:
+            rejects.append(f"k={k}: collapsed to {len(sizes)} cluster(s)")
+            continue
+        if int(sizes.min()) < min_size:
+            rejects.append(f"k={k}: min_size {int(sizes.min())}<{min_size}")
+            continue
+        if float(sizes.max()) / n > max_share:
+            rejects.append(f"k={k}: max_share {sizes.max()/n:.2f}>{max_share:.2f}")
+            continue
+
+        feasible += 1
+        sil = silhouette_score(X, labels)
+        ch = calinski_harabasz_score(X, labels)
+        if sil > best_sil or (sil == best_sil and ch > best_ch):
+            best_sil = sil
+            best_ch = ch
+            best_k = k
+            best_sizes = sorted(sizes.tolist())
+
+    if best_k is None:
+        reason = "; ".join(rejects) or "all candidate K rejected by balance constraints"
+        log.info("Constrained sweep %s → NO feasible K (%s); K=1", k_range, reason)
+        return _fallback(reason)
+
+    log.info(
+        "Constrained sweep %s → best K=%d (sil=%.4f, CH=%.1f, feasible=%d, sizes=%s)",
+        k_range, best_k, best_sil, best_ch, feasible, best_sizes,
+    )
+    return best_k, {
+        "feasible_k_count": feasible,
+        "rejected_reason": None,
+        "silhouette": float(best_sil),
+        "ch": float(best_ch),
+        "cluster_sizes": best_sizes,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +581,7 @@ def score_day(
     trajectories: dict | None = None,
     k_range: tuple[int, int] | None = None,
     method: str = "euclidean",
+    ksweep: str = "legacy",
 ) -> dict:
     """Per-day Task-1 clustering-quality report (offline harness seam, §5/§6).
 
@@ -479,15 +596,55 @@ def score_day(
         enrichment when trajectories given, daily-only otherwise).
         "dtw_precomputed" (P5 Slice-4) → cluster ON the pairwise DTW distance and
         score silhouette in that same precomputed metric; requires *trajectories*.
+    ksweep : {"legacy", "constrained"}, default "legacy"
+        "legacy" (default) → byte-identical to the pre-Slice-6 path (K =
+        argmax silhouette, no balance test).
+        "constrained" (P5 Slice-6) → K chosen by the balance-first sweep
+        (:func:`_sweep_k_constrained`) on the **daily** Euclidean matrix
+        (``trajectories=None``, byte-identical to the production submit matrix);
+        reports ``feasible_k_count`` / ``rejected_reason`` / ``cluster_sizes``.
+        Euclidean-only — combining with ``method='dtw_precomputed'`` raises.
     """
     if method not in ("euclidean", "dtw_precomputed"):
         raise ValueError(f"unknown method {method!r}; expected 'euclidean' or 'dtw_precomputed'")
+    if ksweep not in ("legacy", "constrained"):
+        raise ValueError(f"unknown ksweep {ksweep!r}; expected 'legacy' or 'constrained'")
 
     n = len(matrix)
     # Daily-only baseline (reproduces the D1.b audit path), reported in both modes.
     daily_feats, _, _ = build_clustering_matrix(matrix, trajectories=None)
     X_daily = daily_feats.values
     sil_daily, ch_daily = _fit_metrics(X_daily, _sweep_k(X_daily, k_range) if n > 1 else 1)
+
+    if ksweep == "constrained":
+        # Balance-first Euclidean sweep on the production daily matrix (Slice-6).
+        # Reported alongside the legacy daily silhouette (silhouette_daily) so a
+        # single run shows constrained vs legacy side by side.  DTW is out of scope.
+        if method != "euclidean":
+            raise ValueError("ksweep='constrained' is Euclidean-only; use method='euclidean'")
+        if n > 1:
+            best_k, cinfo = _sweep_k_constrained(X_daily, k_range)
+        else:
+            best_k, cinfo = 1, {
+                "feasible_k_count": 0, "rejected_reason": "n<=1",
+                "silhouette": -1.0, "ch": 0.0, "cluster_sizes": [n],
+            }
+        sizes = cinfo["cluster_sizes"]
+        n_clusters = len(sizes)
+        degenerate = bool(n_clusters < 2 or min(sizes) < TASK1_MIN_CLUSTER_SIZE)
+        return {
+            "best_k": int(best_k),
+            "silhouette": float(cinfo["silhouette"]),
+            "silhouette_daily": float(sil_daily),
+            "ch": float(cinfo["ch"]),
+            "wasserstein_sep": 0.0,
+            "dtw_sep": 0.0,
+            "n_clusters": int(n_clusters),
+            "cluster_sizes": list(sizes),
+            "degenerate": degenerate,
+            "feasible_k_count": int(cinfo["feasible_k_count"]),
+            "rejected_reason": cinfo["rejected_reason"],
+        }
 
     if method == "dtw_precomputed":
         if trajectories is None:
@@ -500,6 +657,7 @@ def score_day(
                 "best_k": 1, "silhouette": -1.0, "silhouette_daily": float(sil_daily),
                 "ch": 0.0, "wasserstein_sep": 0.0, "dtw_sep": 0.0,
                 "n_clusters": 1, "cluster_sizes": [n], "degenerate": True,
+                "feasible_k_count": None, "rejected_reason": None,
             }
         D = _dtw_distance_matrix(traj_arr)
         best_k, best, labels = _dtw_precomputed_sweep(D, traj_arr, k_range)
@@ -516,6 +674,7 @@ def score_day(
             "n_clusters": int(n_clusters),
             "cluster_sizes": sizes.tolist(),
             "degenerate": degenerate,
+            "feasible_k_count": None, "rejected_reason": None,
         }
 
     if trajectories is None:
@@ -553,6 +712,7 @@ def score_day(
         "n_clusters": int(n_clusters),
         "cluster_sizes": sizes.tolist(),
         "degenerate": degenerate,
+        "feasible_k_count": None, "rejected_reason": None,
     }
 
 

@@ -90,7 +90,8 @@ def _load_universe(path: str) -> list[str]:
 
 
 def score_one_date(
-    root: str, universe_codes: list[str], date: str, method: str = "euclidean"
+    root: str, universe_codes: list[str], date: str,
+    method: str = "euclidean", ksweep: str = "legacy",
 ) -> dict | None:
     """Recompute the production matrix + intraday trajectories for *date* and
     return the Task-1 clustering-quality components (or None if no data).
@@ -100,6 +101,9 @@ def score_one_date(
 
     *method* selects the Task-1 clustering path: "euclidean" (default, Slice-1
     enrichment) or "dtw_precomputed" (Slice-4 — cluster on the DTW distance).
+    *ksweep* selects the K-selection rule: "legacy" (default) or "constrained"
+    (Slice-6 balance-first). The constrained path is daily-only Euclidean, so it
+    skips the trajectory build entirely (no snapshot re-read).
     """
     from src.cluster import score_day
     from src.intraday_trajectory import build_trajectories
@@ -110,19 +114,24 @@ def score_one_date(
     if matrix is None or matrix.empty:
         return None
 
-    present = sorted({str(c) for c in matrix.index.get_level_values("stock_code")})
-    snap = load_parquet(root, date, keys=present)
-    traj_by_key = build_trajectories(snap) if snap is not None and not snap.empty else {}
-    trajectories = {
-        idx: traj_by_key.get((str(idx[0]), str(idx[1])))
-        for idx in matrix.index
-    }
-    # If nothing resolved (no snapshot), fall back to daily-only scoring.  The DTW
-    # path needs trajectories — let score_day fail loud rather than emit a partial.
-    if not any(v is not None for v in trajectories.values()):
+    if ksweep == "constrained":
+        # Balance-first sweep operates on the daily matrix only (byte-identical to
+        # the production submit matrix); no trajectories needed → skip the read.
         trajectories = None
+    else:
+        present = sorted({str(c) for c in matrix.index.get_level_values("stock_code")})
+        snap = load_parquet(root, date, keys=present)
+        traj_by_key = build_trajectories(snap) if snap is not None and not snap.empty else {}
+        trajectories = {
+            idx: traj_by_key.get((str(idx[0]), str(idx[1])))
+            for idx in matrix.index
+        }
+        # If nothing resolved (no snapshot), fall back to daily-only scoring.  The
+        # DTW path needs trajectories — let score_day fail loud, not emit a partial.
+        if not any(v is not None for v in trajectories.values()):
+            trajectories = None
 
-    d = score_day(matrix, trajectories=trajectories, method=method)
+    d = score_day(matrix, trajectories=trajectories, method=method, ksweep=ksweep)
     d["date"] = str(date)
     d["panel_n"] = int(len(matrix))
     return d
@@ -131,19 +140,25 @@ def score_one_date(
 def _print_report(rows: list[dict]) -> None:
     print("Task-1 offline clustering quality — components only (no blended score).")
     print(f"{'date':<10}{'panel_n':>8}{'best_K':>7}{'sil':>9}{'sil_daily':>10}"
-          f"{'audit_D1b':>10}{'CH':>8}{'wass_sep':>10}{'dtw_sep':>9}{'nclust':>7}  flags")
+          f"{'audit_D1b':>10}{'CH':>8}{'wass_sep':>10}{'dtw_sep':>9}{'nclust':>7}"
+          f"{'feas_K':>7}  flags")
     for r in rows:
         audit = _AUDIT_D1B.get(r["date"])
         audit_s = f"{audit:.4f}" if audit is not None else "   -  "
         flag = "DEGENERATE" if r["degenerate"] else ""
         up = "↑" if audit is not None and r["silhouette"] > audit else ""
+        feas = r.get("feasible_k_count")
+        feas_s = f"{feas:>7}" if feas is not None else f"{'-':>7}"
+        reason = r.get("rejected_reason")
+        reason_s = f" NO-FEASIBLE-K[{reason}]" if reason else ""
         # Surface cluster sizes so singleton-chaining (average-linkage artifact)
         # is legible rather than hidden behind a one-word flag.
         sizes = r.get("cluster_sizes")
         sizes_s = f" sizes={sizes}" if sizes is not None else ""
         print(f"{r['date']:<10}{r['panel_n']:>8}{r['best_k']:>7}{r['silhouette']:>9.4f}"
               f"{r['silhouette_daily']:>10.4f}{audit_s:>10}{r['ch']:>8.1f}"
-              f"{r['wasserstein_sep']:>10.4f}{r['dtw_sep']:>9.4f}{r['n_clusters']:>7}  {flag}{up}{sizes_s}")
+              f"{r['wasserstein_sep']:>10.4f}{r['dtw_sep']:>9.4f}{r['n_clusters']:>7}"
+              f"{feas_s}  {flag}{up}{reason_s}{sizes_s}")
 
     if len(rows) >= 1:
         sils = [r["silhouette"] for r in rows]
@@ -176,8 +191,17 @@ def run(argv: list[str] | None = None) -> int:
                         choices=["euclidean", "dtw-precomputed"],
                         help="Task-1 clustering path: 'euclidean' (default, Slice-1) or "
                              "'dtw-precomputed' (Slice-4 — cluster on the DTW distance).")
+    parser.add_argument("--ksweep", default="legacy",
+                        choices=["legacy", "constrained"],
+                        help="K-selection rule: 'legacy' (default, argmax silhouette) or "
+                             "'constrained' (Slice-6 balance-first Euclidean daily sweep).")
     args = parser.parse_args(argv)
     method = args.method.replace("-", "_")
+    ksweep = args.ksweep
+    if ksweep == "constrained" and method != "euclidean":
+        print("ERROR: --ksweep constrained is Euclidean-only; drop --method dtw-precomputed",
+              file=sys.stderr)
+        return 1
 
     logging.basicConfig(level=logging.WARNING,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -211,7 +235,7 @@ def run(argv: list[str] | None = None) -> int:
     rows: list[dict] = []
     for date in dates:
         try:
-            d = score_one_date(root, universe_codes, date, method=method)
+            d = score_one_date(root, universe_codes, date, method=method, ksweep=ksweep)
         except Exception as exc:  # noqa: BLE001
             print(f"ERROR: scoring failed for {date}: {exc}", file=sys.stderr)
             return 1
@@ -227,6 +251,10 @@ def run(argv: list[str] | None = None) -> int:
     if method == "dtw_precomputed":
         print("method = dtw_precomputed — 'sil' column is DTW-space silhouette "
               "(precomputed metric); 'audit_D1b' is Euclidean and NOT directly comparable.")
+    if ksweep == "constrained":
+        print("ksweep = constrained (Slice-6) — 'sil' is the balance-first daily "
+              "silhouette; 'sil_daily' is the legacy argmax-silhouette on the SAME matrix. "
+              "By construction sil ≤ sil_daily (subset argmax); 'feas_K' counts feasible K.")
     _print_report(rows)
     return 0
 

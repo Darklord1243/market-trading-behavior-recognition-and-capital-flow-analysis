@@ -18,6 +18,7 @@ import config
 from src.cluster import (
     cluster_patterns,
     _sweep_k,
+    _sweep_k_constrained,
     _dtw_distance,
     _dtw_distance_matrix,
     score_day,
@@ -690,3 +691,162 @@ def test_score_day_dtw_requires_trajectories():
     matrix, _ = _shape_cluster_fixture(rng)
     with pytest.raises(ValueError):
         score_day(matrix, trajectories=None, k_range=(2, 5), method="dtw_precomputed")
+
+
+# ===========================================================================
+# Slice-6 (P5): constraint-first (balance) Euclidean K-sweep
+# docs/hypotheses/p5-task1-constrained-ksweep.md
+# ===========================================================================
+
+
+def _sizes_at(X: np.ndarray, k: int) -> list[int]:
+    """Sorted KMeans cluster sizes at *k* (helper for constrained-sweep tests)."""
+    from sklearn.cluster import KMeans
+
+    if k < 2:
+        return [X.shape[0]]
+    labels = KMeans(n_clusters=k, random_state=config.RANDOM_SEED, n_init=10).fit_predict(X)
+    return sorted(np.unique(labels, return_counts=True)[1].tolist())
+
+
+def test_constrained_rejects_singleton_k_legacy_picks():
+    """Planted 3 balanced blobs + one moderate outlier: legacy argmax-silhouette
+    isolates the outlier as a SINGLETON (K=4 → [1,20,20,20]); the constrained
+    sweep (min_size=2) rejects every singleton K and picks the balanced K=3
+    ([20,20,21]).  A stub that ignores balance would return the singleton K.
+    """
+    rng = np.random.default_rng(0)
+    parts = []
+    for c in range(3):
+        centre = np.zeros(9)
+        centre[c] = 4.0
+        parts.append(rng.normal(centre, 0.05, size=(20, 9)))
+    outlier = np.full((1, 9), 2.0)  # moderate: isolable at K=4, absorbed at K=3
+    X = np.vstack(parts + [outlier])  # n = 61
+
+    k_legacy = _sweep_k(X, k_range=(2, 6))
+    k_con, info = _sweep_k_constrained(X, k_range=(2, 6), min_size=2, max_share=0.95)
+
+    # Legacy's winning partition contains a singleton (the isolated outlier).
+    assert min(_sizes_at(X, k_legacy)) == 1, (
+        f"fixture broken: legacy K={k_legacy} sizes={_sizes_at(X, k_legacy)} has no singleton"
+    )
+    # Constrained never returns a partition with a cluster smaller than min_size.
+    con_sizes = _sizes_at(X, k_con)
+    assert min(con_sizes) >= 2, f"constrained K={k_con} kept a singleton: {con_sizes}"
+    assert k_con != k_legacy, "constrained must diverge from the singleton-isolating legacy K"
+    assert info["feasible_k_count"] >= 1
+    assert info["rejected_reason"] is None
+
+
+def test_constrained_rejects_giant_cluster():
+    """A 7-point blob + a 3-point blob: legacy picks K=2 ([3,7], max share 0.70);
+    the constrained sweep (max_share=0.60) rejects that giant-cluster K and picks
+    the balanced K=3 ([3,3,4], max share 0.40).
+    """
+    rng = np.random.default_rng(1)
+    b0 = rng.normal(np.zeros(9), 0.01, size=(7, 9))
+    b1 = rng.normal(np.array([5.0] + [0.0] * 8), 0.01, size=(3, 9))
+    X = np.vstack([b0, b1])  # n = 10
+
+    k_legacy = _sweep_k(X, k_range=(2, 3))
+    k_con, info = _sweep_k_constrained(X, k_range=(2, 3), min_size=2, max_share=0.60)
+
+    n = X.shape[0]
+    assert max(_sizes_at(X, k_legacy)) / n > 0.60, (
+        f"fixture broken: legacy K={k_legacy} has no >60% cluster"
+    )
+    con_sizes = _sizes_at(X, k_con)
+    assert max(con_sizes) / n <= 0.60, f"constrained K={k_con} kept a >60% cluster: {con_sizes}"
+    assert k_con != k_legacy
+    assert info["feasible_k_count"] >= 1
+
+
+def test_constrained_all_k_rejected_returns_one():
+    """Three mutually-distant points, k_range=(2,2): the only K=2 partition is
+    [2,1] (a singleton), which min_size=2 rejects → no feasible K → fall back to
+    K=1 with a recorded rejected_reason (the §4 no-feasible-K falsifier signal).
+    """
+    X = np.array(
+        [[0.0] * 9, [5.0] + [0.0] * 8, [0.0, 5.0] + [0.0] * 7], dtype=float
+    )
+    k_con, info = _sweep_k_constrained(X, k_range=(2, 2), min_size=2, max_share=0.95)
+    assert k_con == 1
+    assert info["feasible_k_count"] == 0
+    assert info["rejected_reason"] is not None
+
+
+def test_constrained_vacuous_matches_legacy():
+    """With min_size=1 and max_share=1.0 the balance rejections never fire, so the
+    constrained sweep reduces to legacy argmax-silhouette and MUST return the same
+    K (regression guard: constrained is a strict superset-restriction of legacy).
+    """
+    rng = np.random.default_rng(0)
+    df = _make_blobs(n_per_cluster=25, n_clusters=3, rng=rng)
+    k_legacy = _sweep_k(df.values, k_range=(2, 6))
+    k_con, _ = _sweep_k_constrained(df.values, k_range=(2, 6), min_size=1, max_share=1.0)
+    assert k_con == k_legacy
+
+
+def test_constrained_defaults_from_config():
+    """_sweep_k_constrained with no min_size/max_share uses the config globals."""
+    assert hasattr(config, "TASK1_MIN_CLUSTER_SIZE")
+    assert hasattr(config, "TASK1_MAX_CLUSTER_SHARE")
+    rng = np.random.default_rng(4)
+    df = _make_blobs(n_per_cluster=20, n_clusters=3, rng=rng)
+    # Explicit config values must match the no-arg call.
+    k_default, _ = _sweep_k_constrained(df.values, k_range=(2, 6))
+    k_explicit, _ = _sweep_k_constrained(
+        df.values,
+        k_range=(2, 6),
+        min_size=config.TASK1_MIN_CLUSTER_SIZE,
+        max_share=config.TASK1_MAX_CLUSTER_SHARE,
+    )
+    assert k_default == k_explicit
+
+
+def _named_blobs(n_per_cluster: int, n_clusters: int, rng: np.random.Generator) -> pd.DataFrame:
+    """Balanced blobs with real feature names (for score_day daily-matrix tests)."""
+    return _make_blobs(n_per_cluster=n_per_cluster, n_clusters=n_clusters, rng=rng)
+
+
+def test_score_day_constrained_reports_balance_diagnostics():
+    """score_day(ksweep='constrained') reports the balance diagnostics and yields a
+    non-degenerate partition on balanced blobs (every cluster ≥ min_size).
+    """
+    rng = np.random.default_rng(0)
+    matrix = _named_blobs(n_per_cluster=20, n_clusters=3, rng=rng)
+    d = score_day(matrix, trajectories=None, k_range=(2, 6), ksweep="constrained")
+    for key in (
+        "best_k", "silhouette", "silhouette_daily", "ch",
+        "n_clusters", "cluster_sizes", "degenerate",
+        "feasible_k_count", "rejected_reason",
+    ):
+        assert key in d, f"score_day(constrained) missing component {key!r}"
+    assert not d["degenerate"], f"unexpected degenerate partition: {d['cluster_sizes']}"
+    assert min(d["cluster_sizes"]) >= config.TASK1_MIN_CLUSTER_SIZE
+    assert d["feasible_k_count"] >= 1
+    assert d["rejected_reason"] is None
+
+
+def test_score_day_ksweep_default_is_legacy():
+    """ksweep defaults to 'legacy' → byte-identical to the pre-Slice-6 call, so the
+    production submit path and every existing caller are untouched.
+    """
+    rng = np.random.default_rng(3)
+    df = _make_blobs(n_per_cluster=15, n_clusters=3, rng=rng)
+    default = score_day(df, trajectories=None, k_range=(2, 5))
+    legacy = score_day(df, trajectories=None, k_range=(2, 5), ksweep="legacy")
+    assert default == legacy
+
+
+def test_score_day_constrained_silhouette_le_legacy():
+    """§2.2 invariant: constrained selects argmax silhouette over a SUBSET of the K
+    legacy ranks, so its reported silhouette can never exceed the legacy silhouette
+    on the same daily matrix (pointwise ≤).
+    """
+    rng = np.random.default_rng(0)
+    matrix = _named_blobs(n_per_cluster=20, n_clusters=3, rng=rng)
+    d_leg = score_day(matrix, trajectories=None, k_range=(2, 6), ksweep="legacy")
+    d_con = score_day(matrix, trajectories=None, k_range=(2, 6), ksweep="constrained")
+    assert d_con["silhouette"] <= d_leg["silhouette"] + 1e-9

@@ -40,6 +40,16 @@ OSS_THRESHOLDS = {"mega": 50000, "large": 10000, "mid": 1000}  # shares
 K_RANGE = (6, 12)          # (min_k, max_k) inclusive — Task-1 bounded K
 DEFAULT_K = 8              # baseline default within K_RANGE; downgrades to n_samples
 
+# Constraint-first (balance) K-sweep guards (P5 Slice-6).  Fixed globals — NOT
+# tuned to any board score or label (docs/hypotheses/p5-task1-constrained-ksweep.md
+# §2.1).  A candidate K is rejected BEFORE its silhouette is compared if it yields a
+# cluster smaller than MIN_CLUSTER_SIZE (a singleton scores ≈1 by construction and
+# is not a behavioral mode) or a cluster holding more than MAX_CLUSTER_SHARE of the
+# panel (the Slice-4 "one dominant mode" degeneracy in Euclidean space).  Both are
+# round, defensible degeneracy rails, never swept against the platform (LIS §3.3).
+TASK1_MIN_CLUSTER_SIZE = 2      # smallest admissible cluster (silhouette needs ≥1 neighbour)
+TASK1_MAX_CLUSTER_SHARE = 0.60  # no single cluster may exceed 60% of the panel
+
 # ---------------------------------------------------------------------------
 # CSV output contracts (fixed column order — never reorder)
 # ---------------------------------------------------------------------------
