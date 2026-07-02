@@ -157,11 +157,11 @@ PYTHONIOENCODING=utf-8 "C:/Users/ASUS/anaconda3/python.exe" -u main.py \
 ```
 Adjust CLI flags to match Sonnet's implementation (`--pack` name may differ — read `--help`).
 
-> ⚠️ **`--pack` gotcha (confirmed 20260701 run):** `main.py --pack submit.zip` writes the zip to the
-> **current working directory (repo root)**, *not* under `-o outputs/<date>/`. To land it at the
-> deliverable path directly, pass the full relative path: `--pack outputs/<date>/submit.zip`.
-> Otherwise move it after the run: `mv submit.zip outputs/<date>/submit.zip` (byte-identical).
-> Either way, confirm the repo root is clean afterward so a stray `submit.zip` isn't left tracked.
+> ℹ️ **`--pack` path resolution (fixed post-20260701):** a **bare filename** like `--pack submit.zip`
+> is now written **into the `-o outputs/<date>/` dir** (resolved by `src/submit_pack.py`), so the
+> deliverable lands at `outputs/<date>/submit.zip` automatically — no manual `mv`, repo root stays clean.
+> Pass a path *with* a directory (e.g. `--pack dist/foo.zip` or an absolute path) to place it elsewhere.
+> *(Historical note: before this fix, bare `--pack submit.zip` dropped the zip in the CWD/repo root.)*
 
 **Verify artifacts:**
 ```bash

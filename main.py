@@ -247,6 +247,8 @@ Examples:
         help=(
             "If given, package the two output CSVs into a submit.zip at this path "
             "(both files at archive root, no nested folders). "
+            "A bare filename (e.g. 'submit.zip') is written INTO the -o output dir; "
+            "pass a path with a directory to place it elsewhere. "
             "Only valid with --input parquet."
         ),
     )
