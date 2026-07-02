@@ -97,6 +97,10 @@ replace the examples with real, cited rows.
 - **Seat-present ≠ whole-day dominance.** A hot-money seat in the top-5 doesn't mean it drove every tick — hence `confidence`.
 - **Does not resolve class-set questions.** (OQ-1 is already resolved: eval is **3-class** per the organizer.)
 - **Small N.** Start at ~8 rows; grow opportunistically. Ten good cited rows beat fifty guesses.
+- **Batch log.** `20260701`: +16 rows (游资 6 / 量化 6 / 散户 4; `capital_intention` 买入 8 / T0交易 5 /
+  卖出 1 / blank 2), all sourced from 东方财富龙虎榜 per-stock pages. CSV total now **n=138** across
+  10 labeling days (20260616–20260701). No `parquet:data/20260701` corpus exists yet, so this batch is
+  label-only — it cannot be scored until that L2 pack lands.
 
 ## 7. What happens next (engineering, not your job)
 
