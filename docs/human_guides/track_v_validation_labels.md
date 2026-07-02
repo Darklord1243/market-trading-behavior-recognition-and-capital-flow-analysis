@@ -68,6 +68,13 @@ Leave `capital_intention` blank rather than guess. Leave a whole row out rather 
 **Reading 龙虎榜 seats:** `机构专用` = institution (公募/社保—**not** our `量化` class). Named retail-brokerage
 营业部 that recur on speculative limit-ups = **游资**. Maintain a small personal list of hot-money seats as you go.
 
+**Provisional — 机构 vs named 游资 dominance (20260626 batch):** when buy-top mixes net-buy-skewed `机构专用`
+with a tier-2 seat (e.g. 华鑫绍兴胜利东路), compare **net-buy 万** on the same side. If named directional
+seats **rival or exceed** the top-4 `机构专用` net-buy block → lean **游资** BORDERLINE (e.g. 300264: 华鑫+国信
++3339万 vs 机构 +2087万). If named seat net-buy is **&lt;~25%** of the top-4 `机构专用` net-buy block → stay
+**量化** BORDERLINE (000100/002025 family; e.g. 002962: 华鑫 +1956万 vs 机构 +8422万 ≈ 23%). Use **exact**
+sums in `notes` (audit-grade). Threshold is a **working hypothesis** — calibrate on future batches, not settled.
+
 ## 5. Recipe — seed ≥8 rows in ~30 minutes
 
 1. Pick a labeling day we have data for: **`20260611`** or **`20260612`** (local corpus; see
