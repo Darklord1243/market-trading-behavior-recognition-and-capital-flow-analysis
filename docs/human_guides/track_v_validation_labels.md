@@ -99,8 +99,11 @@ replace the examples with real, cited rows.
 - **Small N.** Start at ~8 rows; grow opportunistically. Ten good cited rows beat fifty guesses.
 - **Batch log.** `20260701`: +16 rows (游资 6 / 量化 6 / 散户 4; `capital_intention` 买入 8 / T0交易 5 /
   卖出 1 / blank 2), all sourced from 东方财富龙虎榜 per-stock pages. CSV total now **n=138** across
-  10 labeling days (20260616–20260701). No `parquet:data/20260701` corpus exists yet, so this batch is
-  label-only — it cannot be scored until that L2 pack lands.
+  10 labeling days (20260616–20260701). Parquet corpus `data/202607` verified for 20260701 (all 5 streams;
+  `snapshot_20260701.parquet` present, 76 cols / 22.3M rows). Combined multi-root offline gate (dates
+  `<20260701` → `data/202606`, `20260701` → `data/202607`): capital **FULL n=138 0.6627**, through-0629
+  **0.6438 / n=122** (floor held, byte-identical), 0701-only **0.8006 / n=16**; intention **FULL n=129 0.6638**,
+  through-0629 **0.6750 / n=115** (floor held, byte-identical), 0701-only **0.5595 / n=14** (2 blank intention).
 
 ## 7. What happens next (engineering, not your job)
 
