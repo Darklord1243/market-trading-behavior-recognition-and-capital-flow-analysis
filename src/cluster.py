@@ -24,6 +24,7 @@ from scipy.stats import wasserstein_distance
 from sklearn.cluster import AgglomerativeClustering, KMeans
 from sklearn.metrics import calinski_harabasz_score, silhouette_score
 
+import config
 from config import (
     K_RANGE,
     RANDOM_SEED,
@@ -129,6 +130,154 @@ _SUBSTR_LEXICON: list[tuple[str, str, str]] = [
         "成交时间集中度显著高于市场均值（主导特征: {feat}），符合尾盘或开盘集中交易特征",
     ),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Trajectory-shape naming vocabulary (P5.7 — dtw-complete production path)
+# ---------------------------------------------------------------------------
+# Keyed on (SUMMARY_COL, direction) where direction ∈ {"high","low"} is the SIGN
+# of (cluster_centroid − market_mean) on that shape axis.  SUMMARY_COLS is a
+# small closed set of 6 intraday PRICE-PATH shape features (from
+# src.intraday_trajectory); each axis therefore yields TWO opposed, still
+# quantitatively-grounded 行情阶段-flavored names — 12 total, enough to give a
+# DISTINCT name to every cluster up to the K=8 sweep ceiling.  The naming step
+# (P5.7b) assigns these injectively across a day's clusters, so distinct
+# trajectory clusters never collapse into one pattern_type (fixes the P5.7
+# n_pat<3 / top_share>0.65 naming degeneracy WITHOUT touching the frozen,
+# gated clustering).  {feat} = dominant axis name, {delta} = signed magnitude
+# (cluster mean − market mean) so the explanation is literally quantitative.
+_TRAJ_SHAPE_NAMES: dict[tuple[str, str], tuple[str, str]] = {
+    ("traj_turnover_front_load", "high"): (
+        "全天单边拉升",
+        "早盘成交占比高出市场均值{delta}（主导轴: {feat}），资金早盘抢筹、全天单边拉升特征",
+    ),
+    ("traj_turnover_front_load", "low"): (
+        "低开缩量筑底",
+        "早盘成交占比低于市场均值{delta}（主导轴: {feat}），早盘清淡、缩量筑底特征",
+    ),
+    ("traj_turnover_back_load", "high"): (
+        "尾盘集中放量",
+        "尾盘成交占比高出市场均值{delta}（主导轴: {feat}），尾盘集中放量、资金尾市进场特征",
+    ),
+    ("traj_turnover_back_load", "low"): (
+        "高开高走衰竭",
+        "尾盘成交占比低于市场均值{delta}（主导轴: {feat}），成交前置、尾盘动能衰竭特征",
+    ),
+    ("traj_turnover_concentration", "high"): (
+        "脉冲式单点爆量",
+        "单一时段成交占比高出市场均值{delta}（主导轴: {feat}），脉冲式单点爆量特征",
+    ),
+    ("traj_turnover_concentration", "low"): (
+        "横盘均衡震荡",
+        "各时段成交分布低于集中度均值{delta}（主导轴: {feat}），成交均匀、横盘均衡震荡特征",
+    ),
+    ("traj_imbalance_mean", "high"): (
+        "买盘主动控盘",
+        "日内盘口失衡均值高出市场{delta}（主导轴: {feat}），买盘主动、主力控盘特征",
+    ),
+    ("traj_imbalance_mean", "low"): (
+        "卖压主导出货",
+        "日内盘口失衡均值低于市场{delta}（主导轴: {feat}），卖压主导、持续出货特征",
+    ),
+    ("traj_imbalance_trend", "high"): (
+        "尾盘买盘转强",
+        "盘口失衡走势尾盘上行、高出市场{delta}（主导轴: {feat}），尾盘买盘转强特征",
+    ),
+    ("traj_imbalance_trend", "low"): (
+        "尾盘抛压加剧",
+        "盘口失衡走势尾盘下行、低于市场{delta}（主导轴: {feat}），尾盘抛压加剧特征",
+    ),
+    ("traj_return_amplitude", "high"): (
+        "冲高回落出货",
+        "日内价格波动幅度高出市场均值{delta}（主导轴: {feat}），冲高回落、高位出货特征",
+    ),
+    ("traj_return_amplitude", "low"): (
+        "窄幅缩量整理",
+        "日内价格波动幅度低于市场均值{delta}（主导轴: {feat}），窄幅缩量、横盘整理特征",
+    ),
+}
+
+
+def _traj_axis_to_name(col: str, delta_val: float) -> tuple[str, str]:
+    """Map a (shape axis, signed delta) to (pattern_type, explanation).
+
+    Direction is the sign of *delta_val* (cluster centroid − market mean on this
+    axis).  Falls back to FALLBACK_PATTERN_TYPE only if the axis is unrecognised
+    (should not happen; SUMMARY_COLS is closed).
+    """
+    feat_display = col.replace("_", " ")[:40]
+    direction = "high" if delta_val >= 0 else "low"
+    entry = _TRAJ_SHAPE_NAMES.get((col, direction))
+    if entry is None:
+        explanation = f"{FALLBACK_EXPLANATION}（实际主导: {feat_display}）"
+        if len(explanation) > 200:
+            explanation = FALLBACK_EXPLANATION[:197] + "..."
+        return FALLBACK_PATTERN_TYPE, explanation
+    pattern_type, explanation_tpl = entry
+    explanation = explanation_tpl.format(feat=feat_display, delta=f"{abs(delta_val):.3f}")
+    if len(explanation) > 200:
+        explanation = explanation[:197] + "..."
+    return pattern_type, explanation
+
+
+def _assign_traj_names(
+    feats: pd.DataFrame,
+    labels: np.ndarray,
+) -> dict[int, tuple[str, str]]:
+    """Assign a (near-)INJECTIVE trajectory-shape name to every cluster (P5.7b).
+
+    For each cluster, rank its shape axes by ``|centroid − market_mean|``
+    descending (each axis carries its sign → a "high"/"low" name).  Then assign
+    names greedily: the MOST-distinctive cluster (largest top-|delta|) gets first
+    pick of its highest-preference name; each subsequent cluster takes the
+    highest-preference (axis, direction) name not already used.  With 12 signed
+    names available and at most K=8 clusters, distinct clusters always receive
+    distinct names → ``n_pattern_type == n_clusters`` and the top pattern_type
+    row-share equals the max CLUSTER row-share (already gated ≤ 0.60), resolving
+    the P5.7 naming degeneracy.
+
+    Deterministic and label-free — driven only by centroid SUMMARY_COLS.  Never
+    alters ``labels`` (clustering is frozen); only names them.
+    """
+    col_names = list(feats.columns)
+    n = len(feats)
+    global_mean_arr = feats.values.mean(axis=0) if n > 0 else np.zeros(len(col_names))
+
+    unique_cids = list(np.unique(labels))
+    # Per-cluster preference list: (col, delta) sorted by |delta| desc.
+    prefs: dict[int, list[tuple[str, float]]] = {}
+    top_absdelta: dict[int, float] = {}
+    for cid in unique_cids:
+        members = feats.values[labels == cid]
+        centroid = members.mean(axis=0) if len(members) else np.zeros(len(col_names))
+        deltas = [(col, float(centroid[i] - global_mean_arr[i])) for i, col in enumerate(col_names)]
+        deltas.sort(key=lambda cd: abs(cd[1]), reverse=True)
+        prefs[cid] = deltas
+        top_absdelta[cid] = abs(deltas[0][1]) if deltas else 0.0
+
+    # Most-distinctive cluster picks first; deterministic tie-break by cid.
+    order = sorted(unique_cids, key=lambda c: (-top_absdelta[c], int(c)))
+
+    used_names: set[str] = set()
+    name_map: dict[int, tuple[str, str]] = {}
+    for cid in order:
+        chosen = None
+        for col, delta in prefs[cid]:
+            name, expl = _traj_axis_to_name(col, delta)
+            if name not in used_names:
+                chosen = (name, expl)
+                break
+        if chosen is None:
+            # All preferred names taken (only if #clusters > #names, impossible
+            # for K<=8 with 12 names) — fall back to the cluster's primary axis
+            # name suffixed so it stays distinct and non-empty.
+            col, delta = prefs[cid][0]
+            base_name, base_expl = _traj_axis_to_name(col, delta)
+            name = f"{base_name}·{int(cid)}"
+            chosen = (name, base_expl)
+        used_names.add(chosen[0])
+        name_map[cid] = chosen
+    return name_map
 
 
 def _dominant_feature_to_name(dominant_feat: str, delta_val: float) -> tuple[str, str]:
@@ -457,6 +606,158 @@ def _dtw_precomputed_sweep(
     return best_k, metrics, best_labels
 
 
+# ---------------------------------------------------------------------------
+# P5.7: Task-1 production path — DTW complete-linkage (config-gated)
+# docs/hypotheses/competitive-gap-audit-20260703-fable5.md §6
+# ---------------------------------------------------------------------------
+
+
+def _merge_singletons(
+    labels: np.ndarray,
+    D: np.ndarray,
+    min_size: int | None = None,
+) -> np.ndarray:
+    """Reassign members of any cluster smaller than *min_size* to their nearest
+    OTHER cluster (mean precomputed distance in *D*), iterating until every
+    surviving cluster meets *min_size* or a single cluster remains.
+
+    A singleton scores silhouette ~= +1 by construction (Slice-6 note) and is not
+    a behavioral mode. This is the "singleton-merge-to-nearest-cluster" step the
+    P5.7 hypothesis doc (§6) calls for, applied to complete-linkage output.
+    """
+    if min_size is None:
+        min_size = TASK1_MIN_CLUSTER_SIZE
+    labels = np.array(labels, copy=True)
+    n = len(labels)
+    if n == 0:
+        return labels
+
+    for _ in range(n):  # bounded: each pass empties at least one whole cluster
+        uniq, counts = np.unique(labels, return_counts=True)
+        small = uniq[counts < min_size]
+        if len(small) == 0:
+            break
+        if len(uniq) <= 1:
+            break  # nothing left to merge into
+        cid = int(small[0])
+        other_labels = [int(c) for c in uniq if c != cid]
+        members = np.where(labels == cid)[0]
+        for m in members:
+            best_c, best_d = None, np.inf
+            for c in other_labels:
+                c_members = np.where(labels == c)[0]
+                if len(c_members) == 0:
+                    continue
+                d = float(D[m, c_members].mean())
+                if d < best_d:
+                    best_d, best_c = d, c
+            if best_c is not None:
+                labels[m] = best_c
+    return labels
+
+
+def _dtw_complete_sweep(
+    D: np.ndarray,
+    traj_arr: np.ndarray,
+    k_range: tuple[int, int] | None = None,
+    min_size: int | None = None,
+    max_share: float | None = None,
+) -> tuple[int, dict, np.ndarray]:
+    """Pick K = argmax **DTW-space** silhouette via COMPLETE-linkage agglomerative
+    clustering on the precomputed DTW distance, subject to degeneracy rails.
+
+    For each candidate K in *k_range*: fit
+    ``AgglomerativeClustering(metric='precomputed', linkage='complete')``, apply
+    :func:`_merge_singletons`, then REJECT the candidate (before its silhouette is
+    compared) if, after merge:
+
+      * fewer than 3 distinct clusters remain (K >= 3 required post-merge), OR
+      * ``min(cluster_sizes) < min_size``, OR
+      * ``max(cluster_sizes) / n > max_share``.
+
+    Silhouette is scored on the FINAL (post-merge) labels in the same precomputed
+    DTW space that was clustered in — one honest objective, matching the
+    production label path that will actually ship. Different from
+    :func:`_dtw_precomputed_sweep` (Slice 4): linkage is 'complete' not 'average',
+    the default K range is `config.TASK1_DTW_K_RANGE` (2-8) not legacy `K_RANGE`
+    (6-12), and degeneracy constraints are baked into selection.
+
+    Returns
+    -------
+    (best_k, metrics, best_labels)
+        ``best_k`` — number of distinct clusters in the selected (post-merge)
+        partition, or 1 if no candidate K is feasible.
+        ``metrics`` — dict with ``silhouette``, ``ch``, ``wasserstein_sep``,
+        ``dtw_sep``, ``cluster_sizes``, ``rejected_reason`` (str|None).
+        ``best_labels`` — the selected partition's labels (``(n,)`` int array).
+    """
+    if k_range is None:
+        k_range = config.TASK1_DTW_K_RANGE
+    if min_size is None:
+        min_size = TASK1_MIN_CLUSTER_SIZE
+    if max_share is None:
+        max_share = TASK1_MAX_CLUSTER_SHARE
+
+    n = D.shape[0]
+    lo, hi = k_range
+    lo_eff, hi_eff = max(lo, 2), min(hi, n - 1)
+    flat = np.asarray(traj_arr, dtype=float).reshape(n, -1)
+
+    def _fallback(reason: str) -> tuple[int, dict, np.ndarray]:
+        return 1, {
+            "silhouette": -1.0, "ch": 0.0, "wasserstein_sep": 0.0, "dtw_sep": 0.0,
+            "cluster_sizes": [n], "rejected_reason": reason,
+        }, np.zeros(n, dtype=int)
+
+    if lo_eff > hi_eff:
+        return _fallback(f"no k>=2 feasible in range {k_range} for n={n}")
+
+    best_k, best_sil, best_labels, best_sizes = None, -np.inf, None, None
+    rejects: list[str] = []
+    for k in range(lo_eff, hi_eff + 1):
+        raw_labels = AgglomerativeClustering(
+            n_clusters=k, metric="precomputed", linkage="complete"
+        ).fit_predict(D)
+        labels = _merge_singletons(raw_labels, D, min_size=min_size)
+        uniq, sizes = np.unique(labels, return_counts=True)
+        k_eff = len(uniq)
+        if k_eff < 3:
+            rejects.append(f"k={k}: k_eff={k_eff}<3 after singleton-merge")
+            continue
+        if int(sizes.min()) < min_size:
+            rejects.append(f"k={k}: min_size {int(sizes.min())}<{min_size} after merge")
+            continue
+        share = float(sizes.max()) / n
+        if share > max_share:
+            rejects.append(f"k={k}: max_share {share:.2f}>{max_share:.2f}")
+            continue
+
+        sil = float(silhouette_score(D, labels, metric="precomputed"))
+        if sil > best_sil:
+            best_sil, best_k, best_labels = sil, k_eff, labels
+            best_sizes = sorted(sizes.tolist())
+
+    if best_labels is None:
+        reason = "; ".join(rejects) or "all candidate K rejected by degeneracy rails"
+        log.info("dtw-complete sweep %s -> NO feasible K (%s); K=1", k_range, reason)
+        return _fallback(reason)
+
+    metrics = {
+        "silhouette": best_sil,
+        "ch": float(calinski_harabasz_score(flat, best_labels)),
+        "wasserstein_sep": _cluster_wasserstein_separation(traj_arr, best_labels),
+        "dtw_sep": _cluster_dtw_separation(traj_arr, best_labels),
+        "cluster_sizes": best_sizes,
+        "rejected_reason": None,
+    }
+    log.info(
+        "dtw-complete sweep %s -> K=%d (dtw_sil=%.4f CH=%.1f wass=%.4f dtw=%.4f sizes=%s)",
+        k_range, best_k, best_sil, metrics["ch"],
+        metrics["wasserstein_sep"], metrics["dtw_sep"], best_sizes,
+    )
+    return best_k, metrics, best_labels
+
+
 def _stack_trajectories(
     trajectories: dict, index: pd.Index, n_bins: int
 ) -> np.ndarray:
@@ -591,11 +892,16 @@ def score_day(
 
     Parameters
     ----------
-    method : {"euclidean", "dtw_precomputed"}, default "euclidean"
+    method : {"euclidean", "dtw_precomputed", "dtw-complete"}, default "euclidean"
         "euclidean" (default) → byte-identical to the pre-Slice-4 path (Slice-1
         enrichment when trajectories given, daily-only otherwise).
         "dtw_precomputed" (P5 Slice-4) → cluster ON the pairwise DTW distance and
         score silhouette in that same precomputed metric; requires *trajectories*.
+        "dtw-complete" (P5.7) → COMPLETE-linkage on the pairwise DTW distance,
+        K-swept over `config.TASK1_DTW_K_RANGE` (2-8, not legacy K_RANGE) with
+        singleton-merge + max-share degeneracy rails baked into selection
+        (:func:`_dtw_complete_sweep`); requires *trajectories*. Canonical
+        hyphenated string — never an underscore variant.
     ksweep : {"legacy", "constrained"}, default "legacy"
         "legacy" (default) → byte-identical to the pre-Slice-6 path (K =
         argmax silhouette, no balance test).
@@ -603,10 +909,12 @@ def score_day(
         (:func:`_sweep_k_constrained`) on the **daily** Euclidean matrix
         (``trajectories=None``, byte-identical to the production submit matrix);
         reports ``feasible_k_count`` / ``rejected_reason`` / ``cluster_sizes``.
-        Euclidean-only — combining with ``method='dtw_precomputed'`` raises.
+        Euclidean-only — combining with ``method='dtw_precomputed'``/``'dtw-complete'`` raises.
     """
-    if method not in ("euclidean", "dtw_precomputed"):
-        raise ValueError(f"unknown method {method!r}; expected 'euclidean' or 'dtw_precomputed'")
+    if method not in ("euclidean", "dtw_precomputed", "dtw-complete"):
+        raise ValueError(
+            f"unknown method {method!r}; expected 'euclidean', 'dtw_precomputed', or 'dtw-complete'"
+        )
     if ksweep not in ("legacy", "constrained"):
         raise ValueError(f"unknown ksweep {ksweep!r}; expected 'legacy' or 'constrained'")
 
@@ -677,6 +985,43 @@ def score_day(
             "feasible_k_count": None, "rejected_reason": None,
         }
 
+    if method == "dtw-complete":
+        if trajectories is None:
+            raise ValueError("method='dtw-complete' requires trajectories (falsification §4 metric-stub)")
+        _, _, traj_arr = build_clustering_matrix(matrix, trajectories)
+        if traj_arr is None:
+            raise ValueError("method='dtw-complete' got empty/degenerate trajectories")
+        if n <= 1:
+            return {
+                "best_k": 1, "silhouette": -1.0, "silhouette_daily": float(sil_daily),
+                "ch": 0.0, "wasserstein_sep": 0.0, "dtw_sep": 0.0,
+                "n_clusters": 1, "cluster_sizes": [n], "degenerate": True,
+                "feasible_k_count": None, "rejected_reason": None,
+            }
+        D = _dtw_distance_matrix(traj_arr)
+        eff_k_range = k_range if k_range is not None else config.TASK1_DTW_K_RANGE
+        best_k, best, labels = _dtw_complete_sweep(D, traj_arr, k_range=eff_k_range)
+        _, sizes = np.unique(labels, return_counts=True)
+        n_clusters = len(sizes)
+        degenerate = bool(
+            n_clusters < 3
+            or (sizes < TASK1_MIN_CLUSTER_SIZE).any()
+            or (sizes.max() / n) > TASK1_MAX_CLUSTER_SHARE
+        )
+        return {
+            "best_k": int(best_k),
+            "silhouette": float(best["silhouette"]),
+            "silhouette_daily": float(sil_daily),
+            "ch": float(best["ch"]),
+            "wasserstein_sep": float(best["wasserstein_sep"]),
+            "dtw_sep": float(best["dtw_sep"]),
+            "n_clusters": int(n_clusters),
+            "cluster_sizes": best.get("cluster_sizes", sizes.tolist()),
+            "degenerate": degenerate,
+            "feasible_k_count": None,
+            "rejected_reason": best.get("rejected_reason"),
+        }
+
     if trajectories is None:
         best_k = _sweep_k(X_daily, k_range) if n > 1 else 1
         X = X_daily
@@ -726,10 +1071,114 @@ def _fit_metrics(X: np.ndarray, k: int) -> tuple[float, float]:
     return float(silhouette_score(X, labels)), float(calinski_harabasz_score(X, labels))
 
 
+def _name_clusters(
+    feats: pd.DataFrame,
+    labels: np.ndarray,
+    name_fn,
+) -> dict[int, tuple[str, str]]:
+    """Centroid-driven, relative-dominance naming (P5.1b) for the legacy
+    euclidean path.  *name_fn* maps (dominant_feat, delta_val) ->
+    (pattern_type, explanation) — ``_dominant_feature_to_name``.  (The
+    dtw-complete path uses the injective ``_assign_traj_names`` instead.)
+
+    Identical control flow to the pre-P5.7 inline block in ``cluster_patterns``
+    (verbatim move, not a rewrite) — required for the euclidean path to stay
+    byte-identical.
+    """
+    n = len(feats)
+    col_names = list(feats.columns)
+
+    global_mean_arr = feats.values.mean(axis=0) if n > 0 else np.zeros(len(col_names))
+    global_mean_dict = {col: float(global_mean_arr[i]) for i, col in enumerate(col_names)}
+
+    unique_cids = list(np.unique(labels))
+    cluster_info: dict[int, tuple[dict[str, float], list[tuple[str, float]]]] = {}
+    for cid in unique_cids:
+        members = feats.values[labels == cid]
+        centroid_mean = members.mean(axis=0)
+        centroid_dict = {col: float(centroid_mean[i]) for i, col in enumerate(col_names)}
+        delta_sorted = sorted(
+            ((col, centroid_dict[col] - global_mean_dict[col]) for col in col_names),
+            key=lambda kv: kv[1],
+            reverse=True,
+        )
+        cluster_info[cid] = (centroid_dict, delta_sorted)
+
+    name_map: dict[int, tuple[str, str]] = {}
+    for cid in unique_cids:
+        _, delta_sorted = cluster_info[cid]
+        dominant_feat, dominant_delta = delta_sorted[0]
+        name_map[cid] = name_fn(dominant_feat, dominant_delta)
+
+    if len(unique_cids) >= 2:
+        axis_idx = 1
+        while len({nm for nm, _ in name_map.values()}) < 2:
+            candidates = []
+            for cid in unique_cids:
+                _, delta_sorted = cluster_info[cid]
+                if axis_idx < len(delta_sorted):
+                    feat, dval = delta_sorted[axis_idx]
+                    candidates.append((abs(dval), cid, feat, dval))
+            if not candidates:
+                break
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            _, reassign_cid, feat, dval = candidates[0]
+            name_map[reassign_cid] = name_fn(feat, dval)
+            axis_idx += 1
+
+    return name_map
+
+
+def _cluster_patterns_dtw_complete(
+    matrix: pd.DataFrame,
+    trajectories: dict | None,
+    k_range: tuple[int, int] | None,
+) -> pd.DataFrame:
+    """P5.7 production path: complete-linkage clustering on the precomputed DTW
+    distance + trajectory-shape naming.  Requires *trajectories* — fails loud
+    without them (never emits a partial/degenerate Task-1 result, matching the
+    Slice-4 falsification rule for the DTW family of methods).
+    """
+    n = len(matrix)
+    if trajectories is None:
+        raise ValueError("method='dtw-complete' requires trajectories")
+    _, _, traj_arr = build_clustering_matrix(matrix, trajectories)
+    if traj_arr is None:
+        raise ValueError("method='dtw-complete' got empty/degenerate trajectories")
+
+    traj_summary = _traj_summary_frame(trajectories, matrix.index)
+
+    if n <= 1:
+        log.info("n=%d <= 1; K=1 path (dtw-complete)", n)
+        labels = np.zeros(n, dtype=int)
+    else:
+        D = _dtw_distance_matrix(traj_arr)
+        eff_k_range = k_range if k_range is not None else config.TASK1_DTW_K_RANGE
+        best_k, _, labels = _dtw_complete_sweep(D, traj_arr, k_range=eff_k_range)
+        if best_k <= 1:
+            labels = np.zeros(n, dtype=int)
+        else:
+            log.info("dtw-complete: %d clusters over %d samples", best_k, n)
+
+    # P5.7b: injective ranked naming so distinct clusters get distinct names
+    # (n_pattern_type == n_clusters; top pattern share == max cluster share).
+    name_map = _assign_traj_names(traj_summary, labels)
+    out = pd.DataFrame(
+        {
+            "pattern_type": [name_map[c][0] for c in labels],
+            "pattern_explanation": [name_map[c][1] for c in labels],
+        },
+        index=matrix.index,
+    )
+    log.info("pattern distribution (dtw-complete): %s", out["pattern_type"].value_counts().to_dict())
+    return out
+
+
 def cluster_patterns(
     matrix: pd.DataFrame,
     k_range: tuple[int, int] | None = None,
     trajectories: dict | None = None,
+    method: str | None = None,
 ) -> pd.DataFrame:
     """Cluster (stock, day) rows and assign an interpretable pattern per row.
 
@@ -741,14 +1190,22 @@ def cluster_patterns(
     matrix : pd.DataFrame
         Feature matrix; rows are (stock, day) observations.
     k_range : (min_k, max_k) inclusive, optional.
-        Override the K sweep range; default is config.K_RANGE.
+        Override the K sweep range; default is config.K_RANGE (euclidean) /
+        config.TASK1_DTW_K_RANGE (dtw-complete).
         Exposed here so callers (mainly tests) can plant a known K.
     trajectories : dict, optional (P5 Slice-1).
         ``{index_key: (n_bins, N_SERIES) ndarray}`` intraday trajectories aligned
-        to ``matrix.index``.  When given, the clustering matrix is enriched with
-        trajectory-shape summary features and K is chosen by the composite
-        (silhouette + Wasserstein + DTW) sweep.  When ``None`` (default, and the
-        production main.py path this slice) behavior is byte-identical to pre-P5.
+        to ``matrix.index``.  When given (euclidean method), the clustering
+        matrix is enriched with trajectory-shape summary features and K is
+        chosen by the composite (silhouette + Wasserstein + DTW) sweep.  When
+        ``None`` (default, and the production main.py path pre-P5.7) behavior is
+        byte-identical to pre-P5.  REQUIRED when ``method="dtw-complete"``.
+    method : {"euclidean", "dtw-complete"}, optional (P5.7).
+        Task-1 clustering path.  Defaults to ``config.TASK1_METHOD`` (read at
+        CALL time, not import time — flipping the config global mid-process is
+        honored).  ``"euclidean"`` (default) is byte-identical to pre-P5.7
+        production.  ``"dtw-complete"`` is the trajectory-space production path
+        (docs/hypotheses/competitive-gap-audit-20260703-fable5.md §6).
 
     Returns
     -------
@@ -756,6 +1213,19 @@ def cluster_patterns(
         Same index as `matrix`; columns: pattern_type, pattern_explanation.
     """
     n = len(matrix)
+
+    if method is None:
+        method = config.TASK1_METHOD
+    if method not in ("euclidean", "dtw-complete"):
+        raise ValueError(
+            f"unknown method {method!r} for cluster_patterns; "
+            "expected 'euclidean' or 'dtw-complete'"
+        )
+
+    if method == "dtw-complete":
+        return _cluster_patterns_dtw_complete(matrix, trajectories, k_range)
+
+    # --- euclidean (legacy, byte-identical) path below — UNCHANGED from pre-P5.7 ---
 
     # --- Rank-normalize (H1 dependency) + optional trajectory enrichment (P5) ---
     # clustering_feats: what KMeans fits on (EXCLUDE dropped; traj_* appended when
@@ -782,58 +1252,7 @@ def cluster_patterns(
 
     # --- Centroid-driven naming (uses naming_feats, so EXCLUDE + traj_* cols
     #     are invisible to argmax and lexicon matching) ---
-    clustering_feats = naming_feats
-    col_names = list(clustering_feats.columns)
-
-    # P5.1b: compute global mean over ALL rows for relative dominance naming
-    global_mean_arr = clustering_feats.values.mean(axis=0) if n > 0 else np.zeros(len(col_names))
-    global_mean_dict = {col: float(global_mean_arr[i]) for i, col in enumerate(col_names)}
-
-    # First pass: assign each cluster its primary relative-dominant label
-    unique_cids = list(np.unique(labels))
-    # Per-cluster info: centroid dict and sorted delta list (descending by delta value)
-    cluster_info: dict[int, tuple[dict[str, float], list[tuple[str, float]]]] = {}
-    for cid in unique_cids:
-        members = clustering_feats.values[labels == cid]
-        centroid_mean = members.mean(axis=0)
-        centroid_dict = {col: float(centroid_mean[i]) for i, col in enumerate(col_names)}
-        # Delta vs global mean, sorted descending by delta value
-        delta_sorted = sorted(
-            ((col, centroid_dict[col] - global_mean_dict[col]) for col in col_names),
-            key=lambda kv: kv[1],
-            reverse=True,
-        )
-        cluster_info[cid] = (centroid_dict, delta_sorted)
-
-    # Assign initial names using the primary dominant feature (axis index 0)
-    name_map: dict[int, tuple[str, str]] = {}
-    for cid in unique_cids:
-        centroid_dict, delta_sorted = cluster_info[cid]
-        dominant_feat, dominant_delta = delta_sorted[0]
-        name, explanation = _dominant_feature_to_name(dominant_feat, dominant_delta)
-        name_map[cid] = (name, explanation)
-
-    # P5.1b: guarantee ≥2 distinct pattern_type when K≥2 (deterministic tie-break)
-    # If all K≥2 clusters mapped to the same label, reassign the cluster whose
-    # SECONDARY |delta| is largest to its secondary-axis label, repeat until ≥2 distinct
-    # (or all secondary axes exhausted).
-    if len(unique_cids) >= 2:
-        axis_idx = 1  # start at secondary axis
-        while len({nm for nm, _ in name_map.values()}) < 2:
-            # Find cluster with the largest |delta| at axis_idx
-            candidates = []
-            for cid in unique_cids:
-                _, delta_sorted = cluster_info[cid]
-                if axis_idx < len(delta_sorted):
-                    feat, dval = delta_sorted[axis_idx]
-                    candidates.append((abs(dval), cid, feat, dval))
-            if not candidates:
-                break  # axes exhausted — cannot diversify further
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            _, reassign_cid, feat, dval = candidates[0]
-            new_name, new_expl = _dominant_feature_to_name(feat, dval)
-            name_map[reassign_cid] = (new_name, new_expl)
-            axis_idx += 1
+    name_map = _name_clusters(naming_feats, labels, _dominant_feature_to_name)
 
     out = pd.DataFrame(
         {

@@ -100,12 +100,14 @@ def score_one_date(
     loop is not repeated (docs/hypotheses/p5-task1-metric-alignment.md §3).
 
     *method* selects the Task-1 clustering path: "euclidean" (default, Slice-1
-    enrichment) or "dtw_precomputed" (Slice-4 — cluster on the DTW distance).
+    enrichment), "dtw_precomputed" (Slice-4 — cluster on the DTW distance), or
+    "dtw-complete" (P5.7 — complete-linkage on the DTW distance, production
+    naming path; canonical hyphenated string, never converted to underscore).
     *ksweep* selects the K-selection rule: "legacy" (default) or "constrained"
     (Slice-6 balance-first). The constrained path is daily-only Euclidean, so it
     skips the trajectory build entirely (no snapshot re-read).
     """
-    from src.cluster import score_day
+    from src.cluster import score_day, cluster_patterns
     from src.intraday_trajectory import build_trajectories
     from src.ingest_parquet import load_parquet
     from src.pipeline_parquet import build_feature_matrix_for_panel
@@ -134,6 +136,20 @@ def score_one_date(
     d = score_day(matrix, trajectories=trajectories, method=method, ksweep=ksweep)
     d["date"] = str(date)
     d["panel_n"] = int(len(matrix))
+
+    # P5.7: score_day is components-only (never assigns names). The dtw-complete
+    # acceptance gate also requires the ACTUAL production naming step (≥3 distinct
+    # pattern_type/day, top pattern ≤65%) — measure it here via one extra
+    # cluster_patterns call on the same matrix + trajectories (no extra data read).
+    if method == "dtw-complete" and trajectories is not None:
+        patterns = cluster_patterns(matrix, trajectories=trajectories, method="dtw-complete")
+        vc = patterns["pattern_type"].value_counts()
+        d["n_pattern_types"] = int(vc.shape[0])
+        d["top_pattern_share"] = float(vc.iloc[0] / len(patterns)) if len(patterns) else 0.0
+    else:
+        d["n_pattern_types"] = None
+        d["top_pattern_share"] = None
+
     return d
 
 
@@ -141,7 +157,7 @@ def _print_report(rows: list[dict]) -> None:
     print("Task-1 offline clustering quality — components only (no blended score).")
     print(f"{'date':<10}{'panel_n':>8}{'best_K':>7}{'sil':>9}{'sil_daily':>10}"
           f"{'audit_D1b':>10}{'CH':>8}{'wass_sep':>10}{'dtw_sep':>9}{'nclust':>7}"
-          f"{'feas_K':>7}  flags")
+          f"{'feas_K':>7}{'n_pat':>7}{'top_shr':>9}  flags")
     for r in rows:
         audit = _AUDIT_D1B.get(r["date"])
         audit_s = f"{audit:.4f}" if audit is not None else "   -  "
@@ -149,6 +165,10 @@ def _print_report(rows: list[dict]) -> None:
         up = "↑" if audit is not None and r["silhouette"] > audit else ""
         feas = r.get("feasible_k_count")
         feas_s = f"{feas:>7}" if feas is not None else f"{'-':>7}"
+        n_pat = r.get("n_pattern_types")
+        n_pat_s = f"{n_pat:>7}" if n_pat is not None else f"{'-':>7}"
+        top_shr = r.get("top_pattern_share")
+        top_shr_s = f"{top_shr:>9.4f}" if top_shr is not None else f"{'-':>9}"
         reason = r.get("rejected_reason")
         reason_s = f" NO-FEASIBLE-K[{reason}]" if reason else ""
         # Surface cluster sizes so singleton-chaining (average-linkage artifact)
@@ -158,7 +178,7 @@ def _print_report(rows: list[dict]) -> None:
         print(f"{r['date']:<10}{r['panel_n']:>8}{r['best_k']:>7}{r['silhouette']:>9.4f}"
               f"{r['silhouette_daily']:>10.4f}{audit_s:>10}{r['ch']:>8.1f}"
               f"{r['wasserstein_sep']:>10.4f}{r['dtw_sep']:>9.4f}{r['n_clusters']:>7}"
-              f"{feas_s}  {flag}{up}{reason_s}{sizes_s}")
+              f"{feas_s}{n_pat_s}{top_shr_s}  {flag}{up}{reason_s}{sizes_s}")
 
     if len(rows) >= 1:
         sils = [r["silhouette"] for r in rows]
@@ -188,19 +208,26 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--universe", default=None,
                         help="CSV/xlsx of universe codes (default: samples/stock-samples.xlsx).")
     parser.add_argument("--method", default="euclidean",
-                        choices=["euclidean", "dtw-precomputed"],
-                        help="Task-1 clustering path: 'euclidean' (default, Slice-1) or "
-                             "'dtw-precomputed' (Slice-4 — cluster on the DTW distance).")
+                        choices=["euclidean", "dtw-precomputed", "dtw-complete"],
+                        help="Task-1 clustering path: 'euclidean' (default, Slice-1), "
+                             "'dtw-precomputed' (Slice-4 — average-linkage on the DTW "
+                             "distance), or 'dtw-complete' (P5.7 — complete-linkage "
+                             "production path).")
     parser.add_argument("--ksweep", default="legacy",
                         choices=["legacy", "constrained"],
                         help="K-selection rule: 'legacy' (default, argmax silhouette) or "
                              "'constrained' (Slice-6 balance-first Euclidean daily sweep).")
     args = parser.parse_args(argv)
-    method = args.method.replace("-", "_")
+    # Canonical strings: "euclidean" and "dtw-complete" (P5.7) are used VERBATIM
+    # (hyphenated) everywhere — CLI choice, config.TASK1_METHOD, cluster.py branch
+    # comparisons. Only the OLD Slice-4 CLI flag "dtw-precomputed" is translated to
+    # its historical internal underscore spelling "dtw_precomputed" (score_day's
+    # pre-existing method value) for backward compatibility.
+    method = "dtw_precomputed" if args.method == "dtw-precomputed" else args.method
     ksweep = args.ksweep
     if ksweep == "constrained" and method != "euclidean":
-        print("ERROR: --ksweep constrained is Euclidean-only; drop --method dtw-precomputed",
-              file=sys.stderr)
+        print("ERROR: --ksweep constrained is Euclidean-only; drop --method "
+              "dtw-precomputed/dtw-complete", file=sys.stderr)
         return 1
 
     logging.basicConfig(level=logging.WARNING,
@@ -251,6 +278,12 @@ def run(argv: list[str] | None = None) -> int:
     if method == "dtw_precomputed":
         print("method = dtw_precomputed — 'sil' column is DTW-space silhouette "
               "(precomputed metric); 'audit_D1b' is Euclidean and NOT directly comparable.")
+    if method == "dtw-complete":
+        print("method = dtw-complete (P5.7) — 'sil' column is DTW-space silhouette "
+              "(precomputed complete-linkage, K-swept over TASK1_DTW_K_RANGE=2..8 with "
+              "singleton-merge + max-share rails); 'audit_D1b' is Euclidean and NOT "
+              "directly comparable. n_pat/top_shr come from the production naming step "
+              "(cluster_patterns) — the acceptance gate is n_pat>=3 and top_shr<=0.65/day.")
     if ksweep == "constrained":
         print("ksweep = constrained (Slice-6) — 'sil' is the balance-first daily "
               "silhouette; 'sil_daily' is the legacy argmax-silhouette on the SAME matrix. "

@@ -21,9 +21,12 @@ from src.cluster import (
     _sweep_k_constrained,
     _dtw_distance,
     _dtw_distance_matrix,
+    _merge_singletons,
+    _dtw_complete_sweep,
+    _assign_traj_names,
     score_day,
 )
-from src.intraday_trajectory import build_trajectory
+from src.intraday_trajectory import build_trajectory, SUMMARY_COLS
 
 
 # ---------------------------------------------------------------------------
@@ -850,3 +853,249 @@ def test_score_day_constrained_silhouette_le_legacy():
     d_leg = score_day(matrix, trajectories=None, k_range=(2, 6), ksweep="legacy")
     d_con = score_day(matrix, trajectories=None, k_range=(2, 6), ksweep="constrained")
     assert d_con["silhouette"] <= d_leg["silhouette"] + 1e-9
+
+
+# ===========================================================================
+# P5.7: Task-1 production path — DTW complete-linkage (config-gated)
+# docs/hypotheses/competitive-gap-audit-20260703-fable5.md §6
+# ===========================================================================
+
+
+def test_merge_singletons_relabels_to_nearest_cluster():
+    """A singleton cluster must be reassigned to its nearest OTHER cluster (by
+    mean precomputed distance); no cluster smaller than min_size remains after.
+
+    3 well-separated blobs (5 points each) + 1 singleton planted unambiguously
+    close to blob 1 (centred at (5,5)) and far from blobs 0/2. A stub that
+    ignores distance (e.g. always merges into cluster 0) fails this test.
+    """
+    from scipy.spatial.distance import cdist
+
+    rng = np.random.default_rng(0)
+    c0 = rng.normal(0.0, 0.05, size=(5, 2))
+    c1 = rng.normal(5.0, 0.05, size=(5, 2))
+    c2 = rng.normal(10.0, 0.05, size=(5, 2))
+    singleton = np.array([[5.1, 4.9]])  # unambiguously near c1's centroid
+    X = np.vstack([c0, c1, c2, singleton])
+    D = cdist(X, X)
+    labels = np.array([0] * 5 + [1] * 5 + [2] * 5 + [3])  # label 3 = the singleton
+
+    merged = _merge_singletons(labels, D, min_size=2)
+
+    sizes = np.unique(merged, return_counts=True)[1]
+    assert min(sizes) >= 2, f"singleton not merged: sizes={sizes}"
+    assert merged[-1] == 1, (
+        f"expected the singleton (nearest to cluster 1's centroid) merged into "
+        f"cluster 1, got {merged[-1]}"
+    )
+
+
+def test_dtw_complete_sweep_recovers_shape_clusters_non_degenerate():
+    """Complete-linkage sweep on 3 clearly DTW-separated shape groups (front /
+    back / uniform intraday turnover) recovers a non-degenerate partition:
+    K>=3, no cluster below TASK1_MIN_CLUSTER_SIZE, max share within
+    TASK1_MAX_CLUSTER_SHARE, and strongly positive DTW-space silhouette.
+    """
+    rng = np.random.default_rng(7)
+    matrix, trajs = _shape_cluster_fixture(rng)
+    traj_arr = np.stack([trajs[i] for i in range(len(matrix))])
+    D = _dtw_distance_matrix(traj_arr)
+
+    best_k, info, labels = _dtw_complete_sweep(D, traj_arr, k_range=(2, 8))
+
+    assert best_k >= 3, f"expected K>=3 after merge, got K={best_k}"
+    sizes = np.unique(labels, return_counts=True)[1]
+    assert min(sizes) >= config.TASK1_MIN_CLUSTER_SIZE, f"singleton survived: {sizes}"
+    assert max(sizes) / len(matrix) <= config.TASK1_MAX_CLUSTER_SHARE, (
+        f"cluster share exceeds config limit: sizes={sizes}"
+    )
+    assert info["silhouette"] > 0.15, (
+        f"DTW-complete silhouette {info['silhouette']:.4f} must clear the +0.15 gate"
+    )
+
+
+def test_dtw_complete_naming_yields_diverse_pattern_types():
+    """cluster_patterns(method='dtw-complete') on 3 shape modes (front/back/uniform
+    turnover) yields >=3 distinct pattern_type labels, driven by trajectory-shape
+    summary centroids — NOT the single dominant microstructure feature fallback
+    that collapses to 机构长线配置 55-64% of the time on the legacy path.
+    """
+    rng = np.random.default_rng(7)
+    matrix, trajs = _shape_cluster_fixture(rng)
+    result = cluster_patterns(matrix, trajectories=trajs, method="dtw-complete", k_range=(2, 8))
+
+    unique_labels = result["pattern_type"].unique()
+    assert len(unique_labels) >= 3, (
+        f"Expected >=3 distinct pattern_type labels from trajectory-shape naming, "
+        f"got {len(unique_labels)}: {list(unique_labels)}"
+    )
+    assert list(result.columns) == ["pattern_type", "pattern_explanation"]
+    assert list(result.index) == list(matrix.index)
+    for expl in result["pattern_explanation"]:
+        assert expl and len(expl) <= 200
+
+
+def test_cluster_patterns_method_respects_config(monkeypatch):
+    """cluster_patterns with no explicit `method` reads config.TASK1_METHOD at
+    CALL time (not import time): the default 'euclidean' stays byte-identical to
+    the explicit call, and flipping config.TASK1_METHOD to 'dtw-complete' routes
+    to the DTW trajectory path (which requires trajectories — fails loud without
+    them, per the Slice-4 falsification rule; never emits a partial Task-1 result).
+    """
+    rng = np.random.default_rng(3)
+    df = _make_blobs(n_per_cluster=15, n_clusters=3, rng=rng)
+
+    default_result = cluster_patterns(df, k_range=(2, 5))
+    explicit_euclid = cluster_patterns(df, k_range=(2, 5), method="euclidean")
+    pd.testing.assert_frame_equal(default_result, explicit_euclid)
+
+    monkeypatch.setattr(config, "TASK1_METHOD", "dtw-complete")
+    with pytest.raises(ValueError):
+        cluster_patterns(df, k_range=(2, 5))
+
+
+def test_cluster_patterns_dtw_complete_requires_trajectories():
+    """Explicit method='dtw-complete' without trajectories fails loud (never a
+    silent fallback to euclidean, never a partial/degenerate Task-1 emission).
+    """
+    rng = np.random.default_rng(3)
+    df = _make_blobs(n_per_cluster=15, n_clusters=3, rng=rng)
+    with pytest.raises(ValueError):
+        cluster_patterns(df, k_range=(2, 5), method="dtw-complete", trajectories=None)
+
+
+def test_cluster_patterns_euclidean_default_unaffected_by_dtw_k_range():
+    """Legacy euclidean path must stay byte-identical regardless of the new
+    TASK1_DTW_K_RANGE constant — it must never leak into the euclidean sweep.
+    """
+    rng = np.random.default_rng(3)
+    df = _make_blobs(n_per_cluster=15, n_clusters=3, rng=rng)
+    a = cluster_patterns(df, k_range=(2, 5), method="euclidean")
+    b = cluster_patterns(df, k_range=(2, 5))
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_score_day_dtw_complete_reports_required_components():
+    """score_day(method='dtw-complete') exposes every component the offline
+    harness prints, recovers a non-degenerate 3-shape partition, and reports a
+    strongly positive DTW-space silhouette (the acceptance-gate metric).
+    """
+    rng = np.random.default_rng(7)
+    matrix, trajs = _shape_cluster_fixture(rng)
+    d = score_day(matrix, trajectories=trajs, k_range=(2, 8), method="dtw-complete")
+    for key in (
+        "best_k", "silhouette", "silhouette_daily", "ch",
+        "wasserstein_sep", "dtw_sep", "n_clusters", "cluster_sizes", "degenerate",
+    ):
+        assert key in d, f"score_day(dtw-complete) missing component {key!r}"
+    assert d["best_k"] >= 3
+    assert not d["degenerate"], f"unexpected degenerate clustering: {d['cluster_sizes']}"
+    assert d["silhouette"] > 0.15
+
+
+def test_score_day_dtw_complete_requires_trajectories():
+    """The dtw-complete path needs trajectories; asking without them fails loud."""
+    rng = np.random.default_rng(1)
+    matrix, _ = _shape_cluster_fixture(rng)
+    with pytest.raises(ValueError):
+        score_day(matrix, trajectories=None, k_range=(2, 8), method="dtw-complete")
+
+
+def test_score_day_method_default_still_euclidean_with_dtw_complete_available():
+    """score_day's literal default 'euclidean' is unchanged now that 'dtw-complete'
+    is an accepted method value — regression guard against a default-flip typo.
+    """
+    rng = np.random.default_rng(11)
+    matrix, trajs = _shape_cluster_fixture(rng)
+    default = score_day(matrix, trajectories=trajs, k_range=(2, 5))
+    euclid = score_day(matrix, trajectories=trajs, k_range=(2, 5), method="euclidean")
+    assert default == euclid
+
+
+# ===========================================================================
+# P5.7b: injective trajectory-shape naming (naming layer only; clustering frozen)
+# ===========================================================================
+
+
+def _traj_summary_frame_from_dict(rows_by_cid: dict[int, dict[str, float]],
+                                  sizes: dict[int, int]) -> tuple[pd.DataFrame, np.ndarray]:
+    """Build a (feats, labels) pair with the requested per-cluster SUMMARY_COLS
+    centroid values and sizes (all members share the centroid value exactly)."""
+    frames, labels = [], []
+    for cid, size in sizes.items():
+        vals = rows_by_cid[cid]
+        block = pd.DataFrame([{c: vals.get(c, 0.0) for c in SUMMARY_COLS} for _ in range(size)])
+        frames.append(block)
+        labels.extend([cid] * size)
+    return pd.concat(frames, ignore_index=True), np.array(labels)
+
+
+def test_assign_traj_names_injective_when_clusters_collide_on_primary_axis():
+    """Three clusters, two of which collide on the SAME dominant trajectory axis
+    (front_load high) — the exact P5.7 failure shape (K=3, n_pat=2).  Injective
+    naming must give all three clusters DISTINCT pattern_type names, and the top
+    pattern_type row-share must equal the max CLUSTER row-share (each name unique).
+    """
+    # Cluster 0 (4 rows) & Cluster 1 (3 rows) both extreme-HIGH on front_load
+    # (collide on primary axis); they differ on their secondary axis.
+    # Cluster 2 (3 rows) extreme-HIGH on turnover_concentration.
+    rows = {
+        0: {"traj_turnover_front_load": 0.95, "traj_turnover_concentration": 0.30,
+            "traj_return_amplitude": 0.30, "traj_turnover_back_load": 0.30},
+        1: {"traj_turnover_front_load": 0.95, "traj_turnover_concentration": 0.30,
+            "traj_return_amplitude": 0.45, "traj_turnover_back_load": 0.30},
+        2: {"traj_turnover_front_load": 0.30, "traj_turnover_concentration": 0.95,
+            "traj_return_amplitude": 0.30, "traj_turnover_back_load": 0.30},
+    }
+    feats, labels = _traj_summary_frame_from_dict(rows, {0: 4, 1: 3, 2: 3})
+
+    name_map = _assign_traj_names(feats, labels)
+    names = [name_map[c][0] for c in np.unique(labels)]
+    assert len(set(names)) == 3, f"expected 3 distinct names, got {names}"
+
+    # Top pattern_type row-share == max cluster row-share (0.4) since names inject.
+    pattern_per_row = pd.Series([name_map[c][0] for c in labels])
+    top_share = pattern_per_row.value_counts().iloc[0] / len(labels)
+    _, sizes = np.unique(labels, return_counts=True)
+    assert abs(top_share - sizes.max() / len(labels)) < 1e-9
+    assert top_share <= 0.65
+    # Explanations non-empty, quantitatively grounded, ≤200 chars.
+    for c in np.unique(labels):
+        assert name_map[c][1] and len(name_map[c][1]) <= 200
+
+
+def test_assign_traj_names_all_distinct_up_to_k8():
+    """8 clusters each extreme (alternating high/low) on a distinct axis get 8
+    distinct names — the injective lexicon covers the full K=8 sweep ceiling.
+    """
+    axes = SUMMARY_COLS  # 6 axes
+    rows, sizes = {}, {}
+    # 8 clusters: 6 high-on-each-axis + 2 low-on-two-axes (opposed names).
+    specs = [
+        (axes[0], +1), (axes[1], +1), (axes[2], +1), (axes[3], +1),
+        (axes[4], +1), (axes[5], +1), (axes[0], -1), (axes[2], -1),
+    ]
+    for cid, (axis, sign) in enumerate(specs):
+        base = {c: 0.5 for c in SUMMARY_COLS}
+        base[axis] = 0.95 if sign > 0 else 0.05
+        rows[cid] = base
+        sizes[cid] = 5
+    feats, labels = _traj_summary_frame_from_dict(rows, sizes)
+    name_map = _assign_traj_names(feats, labels)
+    names = [name_map[c][0] for c in np.unique(labels)]
+    assert len(set(names)) == 8, f"expected 8 distinct names, got {sorted(set(names))}"
+
+
+def test_dtw_complete_naming_ge3_distinct_and_top_share_le_maxcluster():
+    """End-to-end on the 3-shape fixture: cluster_patterns(dtw-complete) yields
+    n_pattern_type == n_clusters (>=3) and top pattern_type share <= max cluster
+    share — the pre-registered P5.7b re-gate contract.
+    """
+    rng = np.random.default_rng(7)
+    matrix, trajs = _shape_cluster_fixture(rng)
+    result = cluster_patterns(matrix, trajectories=trajs, method="dtw-complete", k_range=(2, 8))
+
+    vc = result["pattern_type"].value_counts()
+    assert vc.shape[0] >= 3, f"expected >=3 distinct pattern_type, got {vc.to_dict()}"
+    top_share = vc.iloc[0] / len(result)
+    assert top_share <= 0.65

@@ -51,6 +51,26 @@ TASK1_MIN_CLUSTER_SIZE = 2      # smallest admissible cluster (silhouette needs 
 TASK1_MAX_CLUSTER_SHARE = 0.60  # no single cluster may exceed 60% of the panel
 
 # ---------------------------------------------------------------------------
+# Task 1 — production clustering method switch (P5.7)
+# ---------------------------------------------------------------------------
+# "euclidean" (default) — legacy KMeans-on-rank-normalized-features path;
+# BYTE-IDENTICAL to pre-P5.7 production (docs/hypotheses/p5-task1-metric-alignment.md).
+# "dtw-complete" — complete-linkage agglomerative clustering on the precomputed
+# pairwise DTW distance between intraday trajectories
+# (docs/hypotheses/competitive-gap-audit-20260703-fable5.md §6); config-gated,
+# NOT the default until the P5.7 acceptance gate ships SHIP (label-free,
+# DTW-sil >= +0.15/day non-degenerate on >=9/11 days).  Canonical string is
+# hyphenated "dtw-complete" everywhere — CLI choice, this constant's value, and
+# every internal branch comparison; never an underscore variant.
+TASK1_METHOD: Literal["euclidean", "dtw-complete"] = "euclidean"
+
+# K-sweep range for the dtw-complete path (P5.7) — intentionally LOW-K and
+# DISTINCT from the legacy K_RANGE=(6,12): trajectory-shape clusters (unlike
+# microstructure feature clusters) are expected to be a small number of
+# intraday-shape archetypes, not 6-12 statistically-thin slices.
+TASK1_DTW_K_RANGE = (2, 8)
+
+# ---------------------------------------------------------------------------
 # CSV output contracts (fixed column order — never reorder)
 # ---------------------------------------------------------------------------
 PREDICT_COLUMNS = ["stock_code", "transaction_date", "capital_type", "capital_intention"]
