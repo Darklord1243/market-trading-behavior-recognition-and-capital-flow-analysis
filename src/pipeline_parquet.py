@@ -64,7 +64,10 @@ def load_universe_codes(path: str) -> list[str]:
             f"universe file {path!r} must have one of {_UNIVERSE_CODE_COLS}; "
             f"got {list(df.columns)}"
         )
-    codes = df[col].astype(str).str.strip()
+    # fillna("") before astype(str): pandas >=3.0 no longer stringifies NaN to
+    # "nan", so a blank universe cell would otherwise survive as a float NaN and
+    # crash sorted() with a float-vs-str TypeError. Coerce blanks to "" up front.
+    codes = df[col].fillna("").astype(str).str.strip()
     codes = codes[codes.ne("") & codes.ne("nan")]
     return sorted(codes.unique().tolist())
 
