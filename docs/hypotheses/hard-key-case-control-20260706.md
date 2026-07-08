@@ -40,6 +40,18 @@ Case/control over 5 days with known board scores. Parquet: `data/202606` (June),
 | 0625 | 0.4558 | 0.129 | 4 | 0.61 | 0.41 | 0.31 | 0.28 | 1.565 | 0.10 | 0.26 | 0.64 | +0.7% | 0.69 |
 | 0701 | 0.5245 | 0.082 | 3 | 0.47 | 0.48 | 0.22 | 0.30 | 1.510 | 0.03 | 0.38 | 0.59 | +0.6% | 0.63 |
 | 0702 | 0.5566 | 0.135 | 4 | 0.52 | 0.41 | 0.30 | 0.29 | 1.564 | 0.10 | 0.20 | 0.70 | −2.2% | 0.18 (broad down) |
+| 0703 | **0.4160** ⬇ | — | 6 | — | 0.39 | 0.28 | 0.33 | 1.572 | 0.10 | 0.29 | 0.61 | — | — |
+
+> **Row 6 addendum (added 2026-07-07).** 0703 board = **0.4160**, scored 2026-07-06 17:00 on the
+> `20260703` slot. Distribution columns are measured directly from the shipped pack
+> `outputs/20260703/submit.zip` (100 stocks); `sil_pat`/`pat_top_share`/`idx_*` were **not** re-run
+> through `hardkey_signature_study.py` (that script's n=5 table was frozen before 0703 scored). 0703
+> is a **new confirming data point**: it lands *between* the 0.33 collapse band and the ~0.52–0.56
+> good band — a mediocre-key day — while its capital distribution (散户0.33/游资0.39/量化0.28,
+> entropy 1.572) sits dead-center among the good days, exactly the "no offline signature" pattern.
+> The pack used the **euclidean floor** (`TASK1_METHOD=euclidean`), the same method as the 0.5566
+> winner (identical `ap active buy pct` / `oss small amount pct` / `oss mega count pct` cluster
+> lexicon, 6 non-degenerate clusters) — **not** a method flip or degeneracy.
 
 ## Verdict — no offline signature separates the collapse days
 
@@ -70,6 +82,25 @@ True per-stock universe-return breadth was *approximated* by index breadth (no r
 the matrix), not measured directly. Index breadth is regime-opposite across the two collapse days,
 making it very unlikely a per-stock version would separate them. Human accepted the verdict without
 closing this axis (2026-07-06). n=5 days.
+
+### 0703 provenance — Fable-5 audit exonerated (added 2026-07-07)
+
+A concern was raised that the 0703 → 0.4160 drop was *caused by the Fable-5 audit*. Three
+independent facts exonerate the audit; the drop is a hard-key day, not a regression:
+
+1. **Chronology.** The 0.4160 pack (`outputs/20260703/submit.zip`) was built `2026-07-06 00:01` and
+   scored `2026-07-06 17:00`. The audit's only code commits — `b26bfed` (pyarrow decl + universe
+   `fillna`) at `21:43` and `6f9fbfa` at `22:16` — landed **~21 h after** the pack was built and
+   ~4 h after it was scored. A later commit cannot alter an already-scored artifact.
+2. **Scope.** `b26bfed` touches only the parquet *gate-reproducibility* loader
+   (`src/pipeline_parquet.load_universe_codes`) and `requirements.txt`; the submission generation
+   path and Task-2 rules are untouched. Clean-checkout smoke (G3) was green.
+3. **Pack health.** 0703 is the euclidean floor, 6 non-degenerate clusters, 100-stock non-degenerate
+   3-class split — byte-consistent method with the 0.5566 winner. No DTW flip, no universe
+   corruption.
+
+Cross-slot note: 0.5566 / 0.5290 are the **0702** slot (euclidean vs dtw paired-A/B); 0.4160 is the
+**0703** slot. Different data dates = different hidden keys — not a same-artifact regression.
 
 ## Implication
 
