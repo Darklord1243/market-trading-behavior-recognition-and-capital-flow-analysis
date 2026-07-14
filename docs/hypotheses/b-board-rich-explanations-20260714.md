@@ -1,8 +1,28 @@
 # Board-B `pattern_explanation` upgrade — implemented (default-OFF)
 
-**Status:** SHIPPED to working tree, **default-OFF** · gated · paired-A/B ready
+**Status:** SHIPPED, **default-OFF** · gated · **day-score lever FALSIFIED by paired upload** (see §Empirical result)
 **Date:** 2026-07-14 · Follows [`b-board-20260713-score-02411-triage.md`](./b-board-20260713-score-02411-triage.md) ranked action #1
 **Compliance:** LIS §3.3 — interpretability-quality lever, **not** tuned to any board number. Ship only via best-of-day paired A/B vs the euclidean floor.
+
+---
+
+## Empirical result (2026-07-15) — pattern_explanation is NOT in the day score
+
+Paired best-of-day upload to the **same 0713 slot**:
+
+| Upload | Zip | Instant score |
+|--------|-----|---------------|
+| Floor (generic templates) | `submit.zip` | 2026-07-14 22:22:23 → **0.2411** |
+| Rich (per-stock, no English) | `submit_rich.zip` | 2026-07-15 00:04:41 → **0.2411** |
+
+The two submits differed in **exactly one dimension** — explanation text (`predict_result` + `pattern_type` byte-identical; explanations 6→100 unique, romanized tokens 100→0). The score was **identical to 4 decimals**.
+
+**Conclusion:** `pattern_explanation` text does **not** enter the Board-B automated instant/day score. Rewriting all 100 rows moved nothing. The FAQ "scored on Board B interpretability" almost certainly refers to the **TOP-15 human replication/review** (b-board-rules §4.2: solution soundness/completeness/reproducibility), not the daily leaderboard number.
+
+**Implications:**
+- H1 (explanation-quality drag on the day score) is **FALSIFIED**. 0.2411 is not caused by generic explanations.
+- The 0713 residual is the un-gateable **Task-2 capital_type F1 (60%)** on the rotating panel + healthy Task-1 geometry — the [[hardkey-no-offline-signature]] pattern; not fixable by tuning.
+- The lever is retained **default-OFF** as dead-weight-free potential upside for a *human* review phase only; **do not** re-invest in it for leaderboard score.
 
 ---
 
