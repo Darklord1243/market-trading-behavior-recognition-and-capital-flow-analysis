@@ -1099,3 +1099,80 @@ def test_dtw_complete_naming_ge3_distinct_and_top_share_le_maxcluster():
     assert vc.shape[0] >= 3, f"expected >=3 distinct pattern_type, got {vc.to_dict()}"
     top_share = vc.iloc[0] / len(result)
     assert top_share <= 0.65
+
+
+# ---------------------------------------------------------------------------
+# Board-B rich pattern_explanation (default-OFF; floor preserved)
+# ---------------------------------------------------------------------------
+
+def _has_ascii_word(s: str) -> bool:
+    """True if the string contains a romanized (latin-letter) token — the
+    'ap active sell pct' artifact the rich path must eliminate."""
+    return any("a" <= ch.lower() <= "z" for ch in s)
+
+
+def test_rich_explanations_off_is_byte_identical_floor():
+    """rich_explanations=False (and the default) must be byte-identical to the
+    pre-Board-B euclidean floor — no accidental behavior change when the flag
+    is off."""
+    rng = np.random.default_rng(3)
+    df = _make_blobs(n_per_cluster=15, n_clusters=3, rng=rng)
+
+    floor = cluster_patterns(df, k_range=(2, 5))
+    explicit_off = cluster_patterns(df, k_range=(2, 5), rich_explanations=False)
+    pd.testing.assert_frame_equal(floor, explicit_off)
+
+
+def test_rich_explanations_preserves_pattern_type_and_upgrades_text():
+    """rich_explanations=True keeps pattern_type / clusters identical to the floor
+    but (a) removes the romanized feature token and (b) adds per-row variance.
+
+    Uses a fixture whose dominant features are *continuous and unsaturated*
+    (unlike _make_blobs, which clips the dominant dim to exactly 1.0 → within-
+    cluster ties → identical percentiles); real market features vary per stock.
+    """
+    rng = np.random.default_rng(11)
+    n = 30
+    grp_a = pd.DataFrame({c: rng.uniform(0.0, 0.2, n) for c in FEATURE_COLS})
+    grp_a["oss_mega_amount_pct"] = rng.uniform(0.50, 0.90, n)   # continuous, distinct per row
+    grp_b = pd.DataFrame({c: rng.uniform(0.0, 0.2, n) for c in FEATURE_COLS})
+    grp_b["oss_small_amount_pct"] = rng.uniform(0.50, 0.90, n)
+    df = pd.concat([grp_a, grp_b], ignore_index=True)
+
+    floor = cluster_patterns(df, k_range=(2, 4))
+    rich = cluster_patterns(df, k_range=(2, 4), rich_explanations=True)
+
+    # Task-1 geometry / naming untouched — pattern_type column identical row-for-row.
+    pd.testing.assert_series_equal(floor["pattern_type"], rich["pattern_type"])
+    assert list(rich.index) == list(floor.index)
+
+    # Discriminating: floor carries the romanized token; rich must not.
+    assert any(_has_ascii_word(e) for e in floor["pattern_explanation"]), (
+        "fixture floor should contain the romanized '主导特征: ...' token"
+    )
+    assert not any(_has_ascii_word(e) for e in rich["pattern_explanation"]), (
+        "rich explanations must be free of romanized latin feature tokens"
+    )
+
+    # Per-row variance: rich has at least as many distinct explanations as the
+    # (cluster-level) floor, and strictly more than the number of clusters when n>clusters.
+    assert rich["pattern_explanation"].nunique() >= floor["pattern_explanation"].nunique()
+    assert rich["pattern_explanation"].nunique() > rich["pattern_type"].nunique()
+
+    # Length guard still holds.
+    assert (rich["pattern_explanation"].str.len() <= 200).all()
+    assert rich["pattern_explanation"].notna().all()
+
+
+def test_rich_explanations_reads_config_at_call_time(monkeypatch):
+    """The default follows config.TASK1_RICH_EXPLANATIONS, read at CALL time."""
+    rng = np.random.default_rng(3)
+    df = _make_blobs(n_per_cluster=15, n_clusters=3, rng=rng)
+
+    monkeypatch.setattr(config, "TASK1_RICH_EXPLANATIONS", False)
+    default_off = cluster_patterns(df, k_range=(2, 5))
+    pd.testing.assert_frame_equal(default_off, cluster_patterns(df, k_range=(2, 5), rich_explanations=False))
+
+    monkeypatch.setattr(config, "TASK1_RICH_EXPLANATIONS", True)
+    default_on = cluster_patterns(df, k_range=(2, 5))
+    pd.testing.assert_frame_equal(default_on, cluster_patterns(df, k_range=(2, 5), rich_explanations=True))

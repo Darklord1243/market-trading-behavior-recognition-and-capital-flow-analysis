@@ -278,12 +278,28 @@ Examples:
             "Only valid with --input parquet."
         ),
     )
+    parser.add_argument(
+        "--rich-explanations",
+        action="store_true",
+        help=(
+            "Board-B interpretability explore (default OFF): keep pattern_type / "
+            "clusters / Task-2 identical to the euclidean floor, but rewrite each "
+            "pattern_explanation to drop the romanized feature token and cite this "
+            "stock's same-day percentile on the cluster's dominant feature. "
+            "Use for a best-of-day paired A/B vs the floor; not tuned to any board "
+            "score (LIS §3.3)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    if args.rich_explanations:
+        config.TASK1_RICH_EXPLANATIONS = True
+        log.info("[cli] --rich-explanations ON (Board-B per-stock explanation upgrade)")
 
     inp = args.input.strip()
 
