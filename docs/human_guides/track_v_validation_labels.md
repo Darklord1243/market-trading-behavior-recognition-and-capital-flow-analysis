@@ -104,6 +104,19 @@ replace the examples with real, cited rows.
   `<20260701` → `data/202606`, `20260701` → `data/202607`): capital **FULL n=138 0.6627**, through-0629
   **0.6438 / n=122** (floor held, byte-identical), 0701-only **0.8006 / n=16**; intention **FULL n=129 0.6638**,
   through-0629 **0.6750 / n=115** (floor held, byte-identical), 0701-only **0.5595 / n=14** (2 blank intention).
+- **Batch log.** `20260702`: +16 rows (游资 6 / 量化 6 / 散户 4; `capital_intention` 买入 8 / T0交易 6 /
+  卖出 1 / blank 1), all sourced from 东方财富龙虎榜 per-stock pages (`scripts/lhb_0702_audit_report.md`).
+  CSV total now **n=154** across 11 labeling days (20260616–20260702). Parquet corpus `data/202607`
+  verified for 20260702 (`snapshot_20260702.parquet` present under `十盘档口/20260702/`).
+- **Batch log.** `20260714`: +2 rows (散户 1 @0.38 卖出 / 量化 1 @0.40 blank), dual-executor dig
+  (Cursor + Sonnet) audited per guide §6; 1 candidate rejected (600844.SH 游资 — buy side not
+  dominated by a registry seat; independent reads disagreed). CSV total now **n=156**.
+  **Coverage collapse is structural, not a rules failure:** the July B-board universes turned
+  all-SH mega-cap/STAR-heavy (`stock_sample_20260714.xlsx` = 100 SH codes) and only **3/100**
+  tripped the LHB at all (both executors independently agree on the hit set). LHB-only digging
+  cannot cover these panels; see guide discussion on pooling days + activating the step-4
+  non-LHB name-prior channel. No 机构-unresolved cases (机构专用 sell-side only, non-dominant);
+  institutional ledger unchanged (0 held).
 
 ## 7. What happens next (engineering, not your job)
 
