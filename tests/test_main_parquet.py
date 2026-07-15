@@ -22,7 +22,7 @@ import pytest
 # Universe-loader tests
 # ---------------------------------------------------------------------------
 
-from src.pipeline_parquet import load_universe_codes
+from src.pipeline_parquet import load_universe_codes, resolve_default_universe
 
 
 def _write_universe_csv(tmp_path, col_name: str, codes: list[str]) -> str:
@@ -79,6 +79,93 @@ def test_load_universe_codes_raises_if_no_known_col(tmp_path):
     path = _write_universe_csv(tmp_path, "unknown_col", ["000001.SZ"])
     with pytest.raises(ValueError):
         load_universe_codes(path)
+
+
+# ---------------------------------------------------------------------------
+# resolve_default_universe — Board B sample is trading-day keyed
+# ---------------------------------------------------------------------------
+# Since the platform rename of 2026-07-15, sample filenames use the L2 trading
+# day itself: stock_sample_{transaction_date}.xlsx (repo files were renamed to
+# match). CLI --date is the L2 / transaction_date, so the auto universe is
+# stock_sample_{--date}.xlsx.
+# Example: --date 20260713 → samples/B_board/stock_sample_20260713.xlsx
+
+
+def test_resolve_default_universe_uses_same_day_sample(tmp_path):
+    """--date=transaction day → prefer stock_sample_{--date}.xlsx."""
+    b_dir = tmp_path / "B_board"
+    b_dir.mkdir()
+    b_path = b_dir / "stock_sample_20260713.xlsx"
+    b_path.write_text("same-day-correct", encoding="utf-8")
+    # Next-day file (pre-rename convention) — must NOT win.
+    (b_dir / "stock_sample_20260714.xlsx").write_text("next-day-wrong", encoding="utf-8")
+    a_path = tmp_path / "stock-samples.xlsx"
+    a_path.write_text("a-fallback", encoding="utf-8")
+
+    resolved = resolve_default_universe(
+        "20260713",
+        explicit=None,
+        b_board_dir=str(b_dir),
+        a_board_fallback=str(a_path),
+    )
+    assert resolved == str(b_path)
+
+
+def test_resolve_default_universe_falls_back_to_a_board(tmp_path):
+    """When the same-day B-board file is missing, fall back to A-board list."""
+    b_dir = tmp_path / "B_board"
+    b_dir.mkdir()
+    # Only a next-day file present — still fall back (do not silently use it).
+    (b_dir / "stock_sample_20260714.xlsx").write_text("next-day-only", encoding="utf-8")
+    a_path = tmp_path / "stock-samples.xlsx"
+    a_path.write_text("a-fallback", encoding="utf-8")
+
+    resolved = resolve_default_universe(
+        "20260713",
+        explicit=None,
+        b_board_dir=str(b_dir),
+        a_board_fallback=str(a_path),
+    )
+    assert resolved == str(a_path)
+
+
+def test_resolve_default_universe_explicit_wins(tmp_path):
+    """Explicit --universe always wins, even if a B-board same-day file exists."""
+    b_dir = tmp_path / "B_board"
+    b_dir.mkdir()
+    (b_dir / "stock_sample_20260713.xlsx").write_text("b", encoding="utf-8")
+    a_path = tmp_path / "stock-samples.xlsx"
+    a_path.write_text("a", encoding="utf-8")
+    explicit = tmp_path / "custom.xlsx"
+    explicit.write_text("custom", encoding="utf-8")
+
+    resolved = resolve_default_universe(
+        "20260713",
+        explicit=str(explicit),
+        b_board_dir=str(b_dir),
+        a_board_fallback=str(a_path),
+    )
+    assert resolved == str(explicit)
+
+
+def test_resolve_default_universe_sample_date_override(tmp_path):
+    """sample_date= forces the filename stem (overrides the --date default)."""
+    b_dir = tmp_path / "B_board"
+    b_dir.mkdir()
+    forced = b_dir / "stock_sample_20260714.xlsx"
+    forced.write_text("forced", encoding="utf-8")
+    (b_dir / "stock_sample_20260713.xlsx").write_text("auto", encoding="utf-8")
+    a_path = tmp_path / "stock-samples.xlsx"
+    a_path.write_text("a", encoding="utf-8")
+
+    resolved = resolve_default_universe(
+        "20260713",
+        explicit=None,
+        sample_date="20260714",
+        b_board_dir=str(b_dir),
+        a_board_fallback=str(a_path),
+    )
+    assert resolved == str(forced)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +255,37 @@ def test_main_argparse_parquet_route(monkeypatch, tmp_path):
     assert root == "data/202606"
     assert date == "20260623"
     assert pack == "submit.zip"
+
+
+def test_main_parquet_auto_resolves_b_board_universe(monkeypatch, tmp_path):
+    """Omitting --universe picks the same-day sample for --date=transaction day."""
+    import main as main_mod
+
+    b_file = tmp_path / "stock_sample_20260713.xlsx"
+    b_file.write_text("b", encoding="utf-8")
+
+    calls = []
+
+    def fake_run_parquet(root, universe_path, date, out_dir, pack_path=None):
+        calls.append((universe_path, date))
+        return {"pattern_reco": "p1", "predict_result": "p2", "n_rows": 0}
+
+    monkeypatch.setattr(main_mod, "run_parquet", fake_run_parquet)
+    monkeypatch.setattr(
+        main_mod,
+        "resolve_default_universe",
+        lambda date, explicit=None: (
+            str(b_file) if explicit is None and date == "20260713" else (explicit or "fallback")
+        ),
+    )
+
+    rc = main_mod.main([
+        "--input", "parquet:data/202607",
+        "--date", "20260713",
+        "-o", str(tmp_path),
+    ])
+    assert rc == 0
+    assert calls == [(str(b_file), "20260713")]
 
 
 def test_main_argparse_xlsx_backward_compat(monkeypatch, tmp_path):

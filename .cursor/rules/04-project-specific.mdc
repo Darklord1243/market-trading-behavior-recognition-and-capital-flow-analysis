@@ -3,3 +3,5 @@ alwaysApply: true
 ---
 
 The only python engine is Anaconda, so always try to use conda prompts when needed.
+
+**Board B docs (active from 2026-07-13):** Before changing submit cadence, scoring assumptions, or label/interpretability strategy, read `docs/official_guidance/README.md` → `b-board-rules.en.md` / `b-board-rules.zh.md` and `competition-clarifications.md` §6.

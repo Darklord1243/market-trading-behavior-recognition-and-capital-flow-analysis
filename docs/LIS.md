@@ -12,6 +12,7 @@
 | **Tests** | `pytest tests/` → **169 passing, 2 xfailed** (verified 2026-06-25; 141+2xfail Feature B.3 slice 1 → +Phase 5 cluster + Phase 6 parquet submit + P2-intent → **169+2xfail**; the 2 xfails are the L-c true-latency discriminating tests, dormant) |
 | **Branch at authoring** | `feat/phase6-parquet-submit` |
 | **Canonical source of truth** | brief `docs/AFAC2026_Track1_Project_Brief.docx` (Rev. 7) + `docs/competition-spec/` |
+| **Board B ops (from 2026-07-13)** | **`docs/official_guidance/b-board-rules.en.md`** (中文: `b-board-rules.zh.md`) — submit window T+1 15:00–T+2 14:59, best-of-day, 9-day WMA. **Date pairing:** `--date`/parquet/`transaction_date` = L2 day; universe file = `stock_sample_{--date}.xlsx` (same day — platform renamed samples to trading-day stems on 2026-07-15; pre-rename records use release-day names). Index: `docs/official_guidance/README.md`. FAQ: `competition-clarifications.md` §6. Runbook: `docs/report/b-board-submit-runbook.md`. |
 
 ### Changelog
 - **v1.6.8 (2026-06-25)** — **Track V V.3.4 verify + 20260624 production submit (labels commit; no rules/scorer change).**
@@ -375,10 +376,11 @@ update this file's changelog**, don't silently diverge.
 
 **Provenance & precedence (when sources conflict, higher wins):**
 1. Direct organizer answer (DingTalk) / latest clarification
-2. Brief Rev. 7
-3. `docs/competition-spec/`
-4. `docs/official_guidance/` (baseline guide labels are **stale** — see below)
-5. Tutorial examples (illustrative only)
+2. **Board B logistics:** `docs/official_guidance/b-board-rules.*` (window / WMA / calendar from 2026-07-13)
+3. Brief Rev. 7
+4. `docs/competition-spec/` (older B-board paste tables are summaries — defer to `b-board-rules.*`)
+5. `docs/official_guidance/` FAQ / baseline (baseline guide labels are **stale** — see below)
+6. Tutorial examples (illustrative only)
 
 > **The 3-class set is a level-1 organizer override.** The baseline guide, `competition-spec`
 > (`topic-specifications-and-data.*` §II/§5.4), the 89-field reference set, and the sample CSVs all say

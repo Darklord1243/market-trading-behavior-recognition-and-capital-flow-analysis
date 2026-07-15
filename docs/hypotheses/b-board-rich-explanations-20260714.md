@@ -2,6 +2,7 @@
 
 **Status:** SHIPPED, **default-OFF** · gated · **day-score lever FALSIFIED by paired upload** (see §Empirical result)
 **Date:** 2026-07-14 · Follows [`b-board-20260713-score-02411-triage.md`](./b-board-20260713-score-02411-triage.md) ranked action #1
+**Naming note:** written pre-rename — `stock_sample_20260714.xlsx` below is the old release-day name of the **20260713**-universe file (renamed `stock_sample_20260713.xlsx` on 2026-07-15; see `b-board-rules.en.md` §2.2).
 **Compliance:** LIS §3.3 — interpretability-quality lever, **not** tuned to any board number. Ship only via best-of-day paired A/B vs the euclidean floor.
 
 ---

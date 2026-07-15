@@ -1,44 +1,53 @@
 # B-board Submit Runbook — daily cadence + paired-A/B protocol
 
-> **Status:** operational runbook, Phase 3a. This file **consolidates** the standing directives that
-> already live in `docs/hypotheses/p5.7-board-paired-ab-0701.md` §§1–5 (the authority) and the
-> reproducibility contract in `docs/report/code-parity-ledger.md` (Rows 1, 18, 19). It adds nothing
-> new to policy — it is the single checklist an operator follows each day so nothing is
-> re-derived under time pressure. Where this file and the paired-A/B doc disagree, **the paired-A/B
-> doc wins**; fix this file.
+> **Status:** operational runbook for **Board B (from 2026-07-13)**.  
+> **Rules authority:** [`../official_guidance/b-board-rules.en.md`](../official_guidance/b-board-rules.en.md)  
+> (中文: [`../official_guidance/b-board-rules.zh.md`](../official_guidance/b-board-rules.zh.md)).  
+> **FAQ / interpretability:** [`../official_guidance/competition-clarifications.md`](../official_guidance/competition-clarifications.md) §6.  
+> This file **consolidates** standing directives from `docs/hypotheses/p5.7-board-paired-ab-0701.md` §§1–5
+> and `docs/report/code-parity-ledger.md` (Rows 1, 18, 19). Where this file and the paired-A/B doc
+> disagree on *experiment protocol*, **the paired-A/B doc wins**; where they disagree on *Board B
+> calendar/window/scoring*, **`b-board-rules.*` wins**.
 
-**Scope / calendar (as of 2026-07-06):**
+**Scope / calendar:**
 
 | Window | Board | Requirement |
 |---|---|---|
-| through **Jul 10** | A-board | daily submit; keep euclidean floor; explore only on explicit human say-so |
-| **Jul 13 – Jul 24** | B-board | **both CSVs required daily**; target **≥ 8 submit-days** (moving average restarts here) |
+| through **Jul 10** | A-board (closed) | historical |
+| **Jul 13 – Jul 24** | B-board | **both CSVs required daily**; ≥ **8** submit-days or excluded from final ranking |
+| Eval cutoff | — | **Jul 24 15:00**; last scored trading day **Jul 22**; **Jul 24 no new stock samples** |
 | Jul 28 – Aug 5 | Report phase (top-15) | `project_solution_report.docx` + `project_solution.zip` (spec §5.5) |
 
-Two scoring mechanics govern everything below (spec §5.1; ledger Rows 18–19):
+Scoring mechanics (`b-board-rules` + ledger Rows 18–19):
 
-- **Deterministic:** an identical zip re-uploaded reproduces its instant score exactly (0.5245 twice).
-- **Best-not-latest:** each day's slot keeps the **best** upload, and a missed day counts as **0**.
-  A paired A/B therefore costs **0** on the moving average — you can explore for free, but you can
-  never skip a day.
+- **Best-of-day:** up to 3 uploads; the platform keeps the day’s **highest** score (not latest).
+- **Missed / late window → 0** for that trading day (window = **T+1 15:00 – T+2 14:59** for day T).
+- **Final rank:** **9-day WMA** (weights 9…1, denom 45), not a simple average.
+- **Deterministic:** identical zip re-upload reproduces its instant score (historical check).
+
+**Example:** sample for T=20260713 posts morning **2026-07-14**; submit that day’s answers after **15:00 on 07-14** and before **14:59 on 07-15**.
 
 ---
 
 ## 1. Pre-flight checklist (mandatory — every upload)
 
-From paired-A/B §3, plus the two ops gotchas that have actually bitten us:
+From paired-A/B §3, plus Board B window and ops gotchas:
 
 ```text
-[ ] Platform slot has ADVANCED to today's transaction_date   ← check FIRST (see gotcha A)
+[ ] Universe = samples/B_board/stock_sample_{transaction_date}.xlsx
+    (same day as --date since the 2026-07-15 platform rename; e.g. date 20260713 → stock_sample_20260713.xlsx)
+[ ] Inside Board B window for this transaction_date (T+1 15:00 – T+2 14:59)
+[ ] Platform slot has ADVANCED to today's expected transaction_date   ← check FIRST (see gotcha A)
 [ ] config.TASK1_METHOD for this run: euclidean | dtw-complete   (LOGGED; euclidean is the floor)
 [ ] predict_result.csv  unique transaction_date : __________
 [ ] pattern_reco.csv    unique transaction_date : __________
 [ ] Platform expected transaction_date          : __________
 [ ] All three dates match EXACTLY
+[ ] pattern_explanation filled for every row (Board B interpretability)
+[ ] capital_type ∈ {游资, 量化, 散户} only
 [ ] Zip contains exactly 2 root CSVs (predict_result.csv + pattern_reco.csv), nothing else
 [ ] Zip built into the intended -o dir (see gotcha B: bare --pack lands in -o, not CWD)
 ```
-
 **Gotcha A — platform date advance.** On 2026-07-03→04, five uploads failed because Tianchi had
 **not advanced** to the 20260702 slot; the writer rejected the zip (`expected 20260701, got
 ['20260702']`). **Confirm the platform's current slot before generating**, and match both CSVs'
@@ -61,6 +70,19 @@ GBK box otherwise buffers and crashes child stdout on non-ASCII (memory `conda-r
 TASK1_METHOD = "euclidean"
 ```
 
+**Example Board B generate (auto universe):**
+
+```text
+python main.py --input parquet:data/202607 --date 20260713 \
+  -o outputs/20260713 --pack submit.zip
+```
+
+- `--date 20260713` = L2 / CSV `transaction_date` (predicted trading day)
+- Auto universe → `samples/B_board/stock_sample_20260713.xlsx` (**same** trading day — filename convention since the 2026-07-15 platform rename)
+- Pass `--universe` explicitly to override
+
+**History:** before 2026-07-15 samples were named by **release** day (next trading day), and pairing `stock_sample_20260713.xlsx` with `--date 20260713` was a platform reject (2026-07-14). Repo samples were renamed to trading-day stems; the reject can no longer happen with correctly-named files.
+
 Generate → pack (2-root zip) → run pre-flight → upload. **Do not** flip to `dtw-complete` on a scored
 day without explicit human direction. Note (memory `dtw-candidate-needs-config-flip`): setting
 `$env:TASK1_METHOD` is a **no-op** — dtw-complete requires flipping `config.TASK1_METHOD` in-process
@@ -68,16 +90,17 @@ day without explicit human direction. Note (memory `dtw-candidate-needs-config-f
 
 ---
 
-## 3. Paired-A/B explore protocol (free under best-not-latest)
+## 3. Paired-A/B explore protocol (free under best-of-day)
 
 Allowed **only on explicit human direction** (paired-A/B §2): a non-scored/practice slot, a B-board
-soak day with time to accumulate, or a deliberate second paired test (accept a possible ~−0.02/day
-drag while both are live). Protocol:
+soak day with time to accumulate, or a deliberate second paired test (accept a possible drag while
+both are live under the **9-day WMA**). Protocol:
 
 1. Hold **Task 2 byte-identical** between the two variants (change only Task-1 labels).
-2. Upload the **euclidean** floor first, then the **dtw-complete** explore — the slot keeps the better.
+2. Upload the **euclidean** floor first, then the **dtw-complete** explore — the slot keeps the **better** (Board B best-of-day).
 3. Both must pass the §1 pre-flight independently.
 4. Any resulting Δ is a Task-1-only measurement; log it, **do not** tune to it.
+5. Both uploads must fall inside the Board B window for that `transaction_date`.
 
 This is the exact mechanism that produced the H1 discovery (§4.3 / §5.4). It is an experiment, not a
 score-chase.

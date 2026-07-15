@@ -62,6 +62,8 @@ Four stages: **Registration & Authentication → Code Submission → Report Subm
 | A-board | June 9 — July 10, 23:59 |
 | B-board | July 13 — July 24, 17:00 |
 
+> **Board B current detail (submit window / 9-day WMA / eval cutoff):** [`../official_guidance/b-board-rules.en.md`](../official_guidance/b-board-rules.en.md)
+
 ### Phase 3 — Report submission
 
 | | |

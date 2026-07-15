@@ -8,6 +8,11 @@ Public API
 load_universe_codes(path)
     Load exchange-suffixed stock codes from a CSV or xlsx file.
 
+resolve_default_universe(transaction_date, *, explicit=None, ...)
+    Prefer ``samples/B_board/stock_sample_{transaction_date}.xlsx`` when present
+    (Board B trading-day naming, platform rename of 2026-07-15); else fall back
+    to ``samples/stock-samples.xlsx``.
+
 build_feature_matrix_for_panel(root, date, stock_codes)
     Build a feature matrix for the given panel.  Missing codes are omitted with
     a WARNING (not fatal) — the caller receives rows only for stocks that have
@@ -26,10 +31,82 @@ log = logging.getLogger(__name__)
 # Column names accepted in universe files (first match wins).
 _UNIVERSE_CODE_COLS = ("股票代码", "stock_code")
 
+# Default paths for Board B daily samples vs A-board static list.
+_DEFAULT_B_BOARD_DIR = os.path.join("samples", "B_board")
+_DEFAULT_A_BOARD_UNIVERSE = os.path.join("samples", "stock-samples.xlsx")
+_B_BOARD_SAMPLE_FMT = "stock_sample_{date}.xlsx"
 
 # ---------------------------------------------------------------------------
 # Universe loader
 # ---------------------------------------------------------------------------
+
+def resolve_default_universe(
+    date: str,
+    *,
+    explicit: str | None = None,
+    sample_date: str | None = None,
+    b_board_dir: str = _DEFAULT_B_BOARD_DIR,
+    a_board_fallback: str = _DEFAULT_A_BOARD_UNIVERSE,
+) -> str:
+    """Pick the universe file for a parquet run.
+
+    Precedence
+    ----------
+    1. ``explicit`` (CLI ``--universe``) when provided
+    2. ``{b_board_dir}/stock_sample_{sample_date}.xlsx`` when that file exists,
+       where ``sample_date`` defaults to ``date`` itself (Board B: since the
+       platform rename of 2026-07-15, the filename uses the L2 **trading** day,
+       not the release day)
+    3. ``a_board_fallback`` (A-board static list)
+
+    Parameters
+    ----------
+    date : L2 / ``transaction_date`` ``YYYYMMDD`` (CLI ``--date``).
+    explicit : Path from ``--universe``, or ``None`` to auto-resolve.
+    sample_date : Optional filename-stem override (use only for odd platform slots).
+    b_board_dir : Directory holding dated Board B sample workbooks.
+    a_board_fallback : Static A-board universe path used when B-board file absent.
+
+    Returns
+    -------
+    Path string to the chosen universe file (existence of the fallback is not
+    checked here — ``load_universe_codes`` will raise if missing).
+
+    Notes
+    -----
+    Example: ``--date 20260713`` → look for ``stock_sample_20260713.xlsx``.
+    Before 2026-07-15 the platform named samples by **release** day (T for
+    trading day T−1) and this resolver used the next trading day; samples in
+    the repo were renamed to trading-day stems when the platform switched.
+    """
+    if explicit:
+        return explicit
+
+    if not date:
+        raise ValueError("date is required to resolve a default universe path")
+
+    stem = sample_date or date
+    b_path = os.path.join(b_board_dir, _B_BOARD_SAMPLE_FMT.format(date=stem))
+    if os.path.isfile(b_path):
+        log.info(
+            "universe auto-resolve: Board B sample %s "
+            "(transaction_date=%s, sample_stem=%s)",
+            b_path,
+            date,
+            stem,
+        )
+        return b_path
+
+    log.info(
+        "universe auto-resolve: no %s (transaction_date=%s sample_stem=%s) "
+        "— falling back to %s",
+        b_path,
+        date,
+        stem,
+        a_board_fallback,
+    )
+    return a_board_fallback
+
 
 def load_universe_codes(path: str) -> list[str]:
     """Load exchange-suffixed stock codes from a CSV or xlsx universe file.

@@ -77,18 +77,25 @@ Download reference materials from the top of the competition details page (see r
 | Final A deadline | **July 10 (Fri) 23:59**; A-board results published **July 13** |
 | Scoring | Moving weighted average of daily scores |
 
-> **Ops note:** Platform FAQ adds instant-feedback window **~18:00 → 08:00** (see [`../official_guidance/competition-clarifications.md`](../official_guidance/competition-clarifications.md)).
+> **Ops note (A-board):** Platform FAQ historically added instant-feedback **~18:00 → 08:00**.  
+> **Do not use that window for Board B** — see [`../official_guidance/b-board-rules.en.md`](../official_guidance/b-board-rules.en.md).
 
 #### B-board
 
 | Rule | Detail |
 |------|--------|
-| Period | 2026/07/13 — 2026/07/24 |
-| Submissions | **Once per trading day** |
+| Period | 2026/07/13 — 2026/07/24 17:00 |
+| Underlying data | 2026/07/10 — 2026/07/23 |
+| Submissions | **At least once** per trading day; **up to 3** per day |
+| Submit window | **T+1 15:00 – T+2 14:59** (late → day score 0) |
 | Minimum days | **Fewer than 8 trading days → excluded from final ranking** |
-| Scoring | Same T+5 moving-weighted-average style as A-board |
+| Daily aggregation | **Best** score of the day (not latest) |
+| Scoring | **9-day WMA** (weights 9…1, denom 45); refresh ~T+5 |
+| Eval cutoff | **2026-07-24 15:00**; last scored trading day **2026-07-22**; **no new samples on 2026-07-24** |
 | Results | Tentatively **2026/07/28** |
-| Audit | **Top 15** on B-board undergo replication audit for final roadshow eligibility |
+| Audit | **Top 15** replication audit for roadshow eligibility |
+
+> **Authoritative detail (window example, WMA formula, vs A-board):** [`../official_guidance/b-board-rules.en.md`](../official_guidance/b-board-rules.en.md). Table above is a summary; that file wins on conflict.
 
 > **Chinese spec adds:** valid A-board result required to enter B-board.
 
