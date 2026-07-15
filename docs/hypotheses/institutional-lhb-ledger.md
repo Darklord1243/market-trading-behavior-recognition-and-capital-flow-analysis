@@ -18,4 +18,4 @@
 ### Change log
 | date | change | by |
 |------|--------|----|
-| _(first entry when a rule is derived)_ | | |
+| 2026-07-16 | Executor prompt `sonnet-lhb-labeling-dig.md` §4 step-2 aligned with §3b: 机构专用-dominant cases now SURFACED as `机构-unresolved` (were silently SKIPPED, starving this ledger). No treatment rule derived yet — 0 held cases. Same edit activated the §4 step-3 non-LHB name-prior 量化 channel (separate concern, logged here for prompt-version audit). | Fable 5 (guide session) |

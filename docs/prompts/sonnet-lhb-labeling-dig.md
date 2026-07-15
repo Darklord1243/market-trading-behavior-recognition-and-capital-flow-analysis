@@ -6,7 +6,12 @@
 
 ## 0. Mission
 
-Fill **offline** `capital_type` validation labels for ONE Board-B trading day from **public 龙虎榜 (dragon-tiger) data only**, so we can compute a self-scored proxy-F1. Coverage will be low (often only a handful of the 100 names are on LHB) — that is expected. **Honesty over coverage: leave a row out rather than guess.**
+Fill **offline** `capital_type` validation labels for ONE Board-B trading day from **public post-market data only**, so we can compute a self-scored proxy-F1. Two channels:
+
+1. **LHB channel** (highest reliability): seat-level reads for universe names on that day's 龙虎榜.
+2. **Non-LHB name-prior channel** (activated 2026-07-16): July Board-B universes are all-SH mega-cap/STAR-heavy and only ~3/100 trip the LHB — for names NOT on LHB, label 量化 from citable index/ETF-membership facts per §4 step 3. Target ~10–15 such rows/day.
+
+**Honesty over coverage: leave a row out rather than guess.**
 
 ## 1. Compliance red lines (violation = disqualification — non-negotiable)
 
@@ -19,7 +24,7 @@ Fill **offline** `capital_type` validation labels for ONE Board-B trading day fr
 ## 2. Inputs (the human fills these in)
 
 - `DATE` = ⟦YYYYMMDD⟧ (e.g. `20260713`)
-- `UNIVERSE` = ⟦stock list file⟧ (e.g. `samples/B_board/stock_sample_20260714.xlsx`; release-day filename maps to L2 day `DATE` = release−1)
+- `UNIVERSE` = ⟦stock list file⟧ (`samples/B_board/stock_sample_{DATE}.xlsx` — since the platform rename of 2026-07-15 the filename date is the L2 trading day itself; e.g. `stock_sample_20260713.xlsx` for `DATE=20260713`)
 
 ## 3. Where to look / how to fetch
 
@@ -32,13 +37,14 @@ Fill **offline** `capital_type` validation labels for ONE Board-B trading day fr
 1. **On `DATE`'s LHB?**
    - **No** → do not label 游资. Go to step 3 (量化/散户 need a *positive* signal). If none → **output nothing for this stock**.
    - **Yes** → step 2.
-2. **On LHB — read reason + seats:**
-   - Known **hot-money 营业部 seat** dominant on buy side **and** single-day surge / 涨停 / 连板 → **游资**, confidence **0.7–0.9**.
-   - **机构专用 (institutional dedicated) seats** dominant → **SKIP** (no valid 3-class label — do NOT coerce into 游资).
-   - Reason/seat explicitly **量化/程序化/高频** with a citable source → **量化**, confidence **0.3–0.6**.
-3. **Not on LHB — only with a positive public signal:**
-   - Known **index-arb / ETF-heavy / high-frequency** name + high two-sided intraday turnover + source naming 量化 → **量化**, confidence **0.3–0.5**.
-   - Clear **retail** profile (low attention/turnover, no seat footprint, citable retail chatter) → **散户**, confidence **0.2–0.4**.
+2. **On LHB — read reason + seats** (strip 沪股通/深股通专用 Northbound flow before judging dominance):
+   - Known **hot-money 营业部 seat** dominant on buy side **and** single-day surge / 涨停 / 连板 → **游资**, confidence **0.7–0.9**. Dominance means the registry seat leads the stripped buy side — brand-summing two small branches to edge past an unrelated top seat does NOT qualify (0714 reject precedent).
+   - **机构专用 (institutional dedicated) seats** dominant → do NOT assign a class and do NOT drop: emit the row with `capital_type=机构-unresolved`, putting seat + 上榜原因 + a turnover note in `notes`. The auditor adjudicates these (guide §3b) and routes unresolved ones to the institutional ledger.
+   - Reason/seat explicitly **量化/程序化/高频**, or QFII/broker-desk **two-sided same-branch churn** after the Northbound strip (高盛/摩根大通/中信上海-style desks on both sides; 603335/603466 precedent) → **量化**, confidence **0.3–0.6**.
+3. **Not on LHB — the name-prior channel (citable public facts only):**
+   - **量化 by index/ETF membership**: the name is a constituent of 上证50 / 沪深300 / 中证500 / 科创50 (verify on csindex.com.cn or the stock's eastmoney F10 page) or a top holding of a major ETF, AND the day shows meaningful two-sided turnover (cite 换手率/振幅 from the public post-market quote page) → **量化**, confidence **0.3–0.4** (index-arb / basket / program flow dominates such names). `notes` MUST start with `NON-LHB name-prior:` and name the specific index/ETF membership. `capital_intention` stays **blank** (no day-specific direction evidence).
+   - Clear **retail** profile (low attention, low turnover, no seat footprint, citable retail chatter) → **散户**, confidence **0.2–0.3**. Use sparingly.
+   - **NEVER** derive these labels from this repo's own features/pipeline output — that is circular. Public facts only.
    - Otherwise → **output nothing.**
 
 ### 4a. Known hot-money seat registry (cite the seat in `notes`; extend as you learn)
@@ -52,9 +58,11 @@ Fill only when unambiguous, else blank: **买入** (买入额 ≫ 卖出额, 拉
 ## 6. Self-audit BEFORE you return (drop any row that fails)
 
 - `confidence` below floor: **<0.6 for 游资**, **<0.3 for 量化/散户** → drop.
+- Name-prior row with confidence **>0.4** → drop (overclaimed; the cap for name-prior-only evidence is 0.4).
+- Name-prior row whose `notes` lacks the `NON-LHB name-prior:` prefix or a specific, checkable index/ETF membership → drop.
 - Missing/unverifiable `source`, or source is the platform → drop.
-- `capital_type` ∉ {游资, 量化, 散户}, or 机构-seat coerced into a class → drop.
-- Any future/next-day data used → drop.
+- `capital_type` ∉ {游资, 量化, 散户, 机构-unresolved}, or 机构-seat coerced into 游资 → drop.
+- Any future/next-day data used, or any use of this repo's own pipeline features → drop.
 - Duplicate `(stock_code, transaction_date)` already in `tests/fixtures/validation_labels.csv` → drop.
 
 ## 7. Output (exact)
@@ -66,7 +74,7 @@ stock_code,transaction_date,capital_type,capital_intention,source,confidence,not
 - `stock_code` with suffix (`600030.SH`); `transaction_date` = `DATE`.
 - `source` = verifiable citation (e.g. `eastmoney lhb 2026-07-13 600030`).
 
-Then a **one-line coverage report**: `accepted N/100 · 游资 a / 量化 b / 散户 c · dropped D (reasons)`. List what you dropped and why — never silently truncate.
+Then a **one-line coverage report**, split by tier: `LHB rows n (游资 a / 量化 b / 散户 c / 机构-unresolved u) · name-prior rows m (量化 q / 散户 s) · dropped D (reasons)`. List what you dropped and why — never silently truncate.
 
 ## 8. Read order before starting
 1. `docs/human_guides/track_v_validation_labels.md` (§0 compliance, §2 class signals, §1 schema)
@@ -75,7 +83,7 @@ Then a **one-line coverage report**: `accepted N/100 · 游资 a / 量化 b / �
 4. Current `tests/fixtures/validation_labels.csv` (schema + dedup target)
 
 ## 9. Success criterion
-A CSV of only sourced, honestly-scored, correctly-classed rows for `DATE`, plus a truthful coverage line — no platform truth, no guessed labels, no repo edits. The human appends it to `validation_labels.csv` and scores with `src/validate.py`.
+A CSV of only sourced, honestly-scored, correctly-classed rows for `DATE`, plus a truthful tier-split coverage line — no platform truth, no guessed labels, no repo edits. A Fable-5 auditor window (see `fable5-guide-lhb-labeling.md`) reconciles your output with the other executor's, appends survivors to `validation_labels.csv`, and routes `机构-unresolved` rows to the institutional ledger.
 
 ---
-> **Open assumption:** `capital_type` has no 机构 class — this prompt DROPS institutional-seat stocks. If the organizer folds 机构 into 游资/量化, step 2 changes by one line; flag it rather than guessing.
+> **Open assumption:** `capital_type` has no 机构 class — surface institutional-seat stocks as `机构-unresolved` (step 2) rather than dropping or coercing; the auditor's §3b phase accumulates them until a treatment rule can be derived.
