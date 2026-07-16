@@ -1,5 +1,8 @@
 # Hand-off — Fable 5 as the Board-B LHB label AUDITOR (fresh window per day)
 
+`PROMPT-VERSION: 2026-07-16`
+
+> **Invoke from this live file path only** (`docs/prompts/fable5-guide-lhb-labeling.md`), never from a copy frozen in an earlier session — copies drift silently (0715 incident).
 > Paste this entire file + the executor CSV output(s) as the opening message to a fresh **Fable 5** window, one window per labeling day. You are the *auditor/analyst*, not the digger.
 > **Compliance is the whole point of this role.** A single platform-truth leak = disqualification (跑通Baseline §合规红线 #3). When in doubt, drop the row.
 > Upstream: the human runs [`sonnet-lhb-labeling-dig.md`](./sonnet-lhb-labeling-dig.md) in Cursor AND Sonnet (dual-executor, deliberately redundant). Downstream: your report feeds the Opus submit session ([`opus-daily-bboard-submit.md`](./opus-daily-bboard-submit.md)).
@@ -7,6 +10,8 @@
 ## 0. Your role (one job — you never browse the web)
 
 **AUDIT** the label rows the executors return for ONE trading day against §3–§6, reconcile disagreements, append survivors to `tests/fixtures/validation_labels.csv`, route institutional cases to the ledger, and hand the human a report + a one-paragraph blurb for the Opus submit session.
+
+**You are the SINGLE WRITER** of `validation_labels.csv`, the institutional ledger, and the track_v batch log — executors (including remediation/backfill runs) only return CSV text. Any rows found in the CSV without a matching batch-log audit entry: quarantine (remove), retro-audit, re-append only the survivors, and note the breach in the batch log.
 
 You do **not** fetch data, browse eastmoney, or run the dig yourself. You do **not** touch `src/features.py`, `src/rules.py`, `main.py`, or any inference path.
 
@@ -98,6 +103,7 @@ Fill only when unambiguous; else blank (never guess): **买入** (买入额 ≫ 
 - Both agree on class → accept the better-evidenced row (audit-grade sums preferred).
 - **Disagree, or one labels while the other deliberately drops** → treat as BORDERLINE: accept only if the surviving read has (a) audit-grade seat sums and (b) an accepted precedent in `validation_labels.csv` notes. A 游资 dominance claim contradicted by an independent read of the same page is **rejected** — disagreement is itself evidence the confidence is not earned.
 - The executors' LHB **hit sets** should match; if they don't, flag the discrepancy to the human before appending anything.
+- **Prompt-version check:** each executor output must open with a `PROMPT-VERSION:` echo matching the current header of `sonnet-lhb-labeling-dig.md`. Missing or stale echo → the executor ran on a drifted prompt copy; flag to the human and audit that output against the LIVE spec (expect missing channels, as in the 0715 incident) before appending anything.
 
 ### 6.3 Duties after adjudication
 1. **Append** survivors to `tests/fixtures/validation_labels.csv` (per §5; verify UTF-8 + `pd.read_csv` parse + new row count).

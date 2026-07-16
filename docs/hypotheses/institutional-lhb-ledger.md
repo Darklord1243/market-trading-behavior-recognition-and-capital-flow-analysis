@@ -8,7 +8,7 @@
 
 | stock_code | date | seat | 上榜原因 | direction | turnover note | why unresolved |
 |------------|------|------|----------|-----------|---------------|----------------|
-| _(append rows here)_ | | | | | | |
+| 600288.SH | 20260715 | 机构专用 (+沪股通专用 co-listed) | 跌幅类 (limit-down day) | buy-side, one-directional accumulation into limit-down | 机构专用+沪股通 combined ≈46.6% of buy-top block; sell side diffuse regional desks (per dual-executor reads; per-seat sums not captured) | No quant signal (no 量化/程序化 reason, no two-sided churn); post-Connect-strip 机构专用 dominance share unquantified; both executors dropped rather than surfacing as 机构-unresolved — auditor routed here per §3b (directional long-only → HOLD) |
 
 ## Derived rule (fill once ≥ ~15 held cases show a stable pattern)
 

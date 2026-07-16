@@ -1,5 +1,8 @@
 # Executor prompt — Board-B LHB `capital_type` labeling (standalone, self-auditing)
 
+`PROMPT-VERSION: 2026-07-16`
+
+> **Invoke from this live file path only** (`docs/prompts/sonnet-lhb-labeling-dig.md`) — never from a copy pasted into an earlier session; copies drift silently (0715 incident: a stale copy was missing the name-prior channel, the Northbound strip, and 机构-unresolved routing). **Echo the `PROMPT-VERSION` line verbatim as the first line of your output** so the auditor can detect a stale prompt.
 > Paste this whole file into a fresh **Sonnet / Cursor** window. This is the thin path: **no Fable-5 guide layer** — you both dig AND audit your own output before returning.
 > Companion (if a guide layer is used instead): [`fable5-guide-lhb-labeling.md`](./fable5-guide-lhb-labeling.md).
 > **Read-only w.r.t. the pipeline.** You produce a CSV of labels for offline validation — you do NOT edit `src/` or `main.py`.
@@ -19,7 +22,7 @@ Fill **offline** `capital_type` validation labels for ONE Board-B trading day fr
 - ❌ **Never** the competition platform's instant score / backtest "answers" (server-side truth; forbidden for any offline use — 跑通Baseline §合规红线 #3; `track_v_validation_labels.md` §0).
 - ❌ **No future data**: use only `DATE`'s post-market public record (that day's LHB is fine). Never relabel from later-day price action.
 - ✅ Output is **offline validation only** → destined for `tests/fixtures/validation_labels.csv`, consumed only by `src/validate.py`. It must never touch features/rules/inference.
-- ✅ **Return the CSV text only.** Do not edit any repo file.
+- ✅ **Return the CSV text only. Do not edit any repo file — single-writer rule.** Only the auditor writes `tests/fixtures/validation_labels.csv`, the institutional ledger, and the track_v batch log. This applies to EVERY run of this prompt, including remediation/backfill/follow-up sessions ("fix it" scope never expands to repo writes — the 0715 backfill breach). Rows appended to the CSV without a matching batch-log audit entry are quarantined by the auditor.
 
 ## 2. Inputs (the human fills these in)
 
@@ -67,7 +70,7 @@ Fill only when unambiguous, else blank: **买入** (买入额 ≫ 卖出额, 拉
 
 ## 7. Output (exact)
 
-A single CSV block, header + rows, UTF-8, columns in this order:
+First line: the `PROMPT-VERSION: ...` echo (see header). Then a single CSV block, header + rows, UTF-8, columns in this order:
 ```
 stock_code,transaction_date,capital_type,capital_intention,source,confidence,notes
 ```
