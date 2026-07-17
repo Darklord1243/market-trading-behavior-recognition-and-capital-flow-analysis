@@ -26,7 +26,12 @@ def pack_submit_zip(out_dir: str, zip_path: str) -> str:
     Parameters
     ----------
     out_dir:   Directory containing the two output CSVs.
-    zip_path:  Destination path for the zip file (created/overwritten).
+    zip_path:  Destination path for the zip file (created/overwritten).  A
+               **bare filename** (no directory component, e.g. ``submit.zip``)
+               is resolved relative to *out_dir*, so ``--pack submit.zip`` lands
+               the archive next to the CSVs rather than in the CWD.  A path that
+               already contains a directory (relative or absolute) is honored
+               verbatim.
 
     Returns
     -------
@@ -43,6 +48,11 @@ def pack_submit_zip(out_dir: str, zip_path: str) -> str:
                 f"submit_zip: required file not found: {src} "
                 f"(run the pipeline first to produce both CSVs)"
             )
+
+    # Bare filename (no directory component) → resolve next to the CSVs in
+    # out_dir, not the CWD.  Path-containing / absolute zip_path is honored.
+    if not os.path.dirname(zip_path):
+        zip_path = os.path.join(out_dir, zip_path)
 
     os.makedirs(os.path.dirname(os.path.abspath(zip_path)), exist_ok=True)
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:

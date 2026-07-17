@@ -68,6 +68,13 @@ Leave `capital_intention` blank rather than guess. Leave a whole row out rather 
 **Reading 龙虎榜 seats:** `机构专用` = institution (公募/社保—**not** our `量化` class). Named retail-brokerage
 营业部 that recur on speculative limit-ups = **游资**. Maintain a small personal list of hot-money seats as you go.
 
+**Provisional — 机构 vs named 游资 dominance (20260626 batch):** when buy-top mixes net-buy-skewed `机构专用`
+with a tier-2 seat (e.g. 华鑫绍兴胜利东路), compare **net-buy 万** on the same side. If named directional
+seats **rival or exceed** the top-4 `机构专用` net-buy block → lean **游资** BORDERLINE (e.g. 300264: 华鑫+国信
++3339万 vs 机构 +2087万). If named seat net-buy is **&lt;~25%** of the top-4 `机构专用` net-buy block → stay
+**量化** BORDERLINE (000100/002025 family; e.g. 002962: 华鑫 +1956万 vs 机构 +8422万 ≈ 23%). Use **exact**
+sums in `notes` (audit-grade). Threshold is a **working hypothesis** — calibrate on future batches, not settled.
+
 ## 5. Recipe — seed ≥8 rows in ~30 minutes
 
 1. Pick a labeling day we have data for: **`20260611`** or **`20260612`** (local corpus; see
@@ -90,6 +97,13 @@ replace the examples with real, cited rows.
 - **Seat-present ≠ whole-day dominance.** A hot-money seat in the top-5 doesn't mean it drove every tick — hence `confidence`.
 - **Does not resolve class-set questions.** (OQ-1 is already resolved: eval is **3-class** per the organizer.)
 - **Small N.** Start at ~8 rows; grow opportunistically. Ten good cited rows beat fifty guesses.
+- **Batch log.** `20260701`: +16 rows (游资 6 / 量化 6 / 散户 4; `capital_intention` 买入 8 / T0交易 5 /
+  卖出 1 / blank 2), all sourced from 东方财富龙虎榜 per-stock pages. CSV total now **n=138** across
+  10 labeling days (20260616–20260701). Parquet corpus `data/202607` verified for 20260701 (all 5 streams;
+  `snapshot_20260701.parquet` present, 76 cols / 22.3M rows). Combined multi-root offline gate (dates
+  `<20260701` → `data/202606`, `20260701` → `data/202607`): capital **FULL n=138 0.6627**, through-0629
+  **0.6438 / n=122** (floor held, byte-identical), 0701-only **0.8006 / n=16**; intention **FULL n=129 0.6638**,
+  through-0629 **0.6750 / n=115** (floor held, byte-identical), 0701-only **0.5595 / n=14** (2 blank intention).
 
 ## 7. What happens next (engineering, not your job)
 

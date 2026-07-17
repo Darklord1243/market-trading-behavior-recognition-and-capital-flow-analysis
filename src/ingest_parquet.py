@@ -144,19 +144,19 @@ def _hhmmssmmm_to_ms(t: int) -> int:
     return ((hh * 60 + mm) * 60 + ss) * 1_000 + ms
 
 
-def read_cancel_frame_parquet(root: str, date: str, stock_code: str) -> pd.DataFrame:
-    """Reconstruct the cancel frame for one stock from ``order.OrderType ∈ {-1,-11}``.
+_CANCEL_ORDER_COLS = ["SecuCode", "OrderID", "OrderType", "OrderTime", "Volume"]
 
-    Emits the ``ingest_local.read_cancel_frame`` contract (``side`` ``B``/``S``,
-    ``cancel_time`` HHMMSSmmm int, ``cancel_qty``, ``time_int`` alias) **plus a
-    real ``latency_ms``** (Track L-c): each cancel is matched to its originating
-    add row by ``OrderID`` (100% linkage in the 委托补全 table), and
-    ``latency_ms = decoded_ms(cancel) − decoded_ms(add)``.  Unmatched cancels get
-    ``NaN`` ``latency_ms`` (excluded downstream).  Empty frame if no cancels.
+
+def _cancel_frame_from_order(df: pd.DataFrame) -> pd.DataFrame:
+    """Build the cancel frame from ONE stock's ``order`` rows (columns per
+    :data:`_CANCEL_ORDER_COLS`).
+
+    Shared by the single-stock :func:`read_cancel_frame_parquet` and the batched
+    :func:`read_cancel_frames_parquet` so both produce **byte-identical** frames.
+    The OrderID self-join must stay per-stock — OrderIDs are only unique within a
+    stock, so callers pass a single stock's rows (row order preserved from the
+    parquet read, which is what makes the batch slices identical to single reads).
     """
-    secu = stock_code_to_secu(stock_code)
-    df = _read_stream(root, date, "order", [secu],
-                      columns=["SecuCode", "OrderID", "OrderType", "OrderTime", "Volume"])
     if df is None or df.empty:
         return pd.DataFrame(columns=_CANCEL_EMPTY_COLS)
 
@@ -186,6 +186,53 @@ def read_cancel_frame_parquet(root: str, date: str, stock_code: str) -> pd.DataF
     c["latency_ms"] = latency.where(latency >= 0)      # drop matched-but-negative as unmatched
 
     return c[_CANCEL_EMPTY_COLS].reset_index(drop=True)
+
+
+def read_cancel_frame_parquet(root: str, date: str, stock_code: str) -> pd.DataFrame:
+    """Reconstruct the cancel frame for one stock from ``order.OrderType ∈ {-1,-11}``.
+
+    Emits the ``ingest_local.read_cancel_frame`` contract (``side`` ``B``/``S``,
+    ``cancel_time`` HHMMSSmmm int, ``cancel_qty``, ``time_int`` alias) **plus a
+    real ``latency_ms``** (Track L-c): each cancel is matched to its originating
+    add row by ``OrderID`` (100% linkage in the 委托补全 table), and
+    ``latency_ms = decoded_ms(cancel) − decoded_ms(add)``.  Unmatched cancels get
+    ``NaN`` ``latency_ms`` (excluded downstream).  Empty frame if no cancels.
+    """
+    secu = stock_code_to_secu(stock_code)
+    df = _read_stream(root, date, "order", [secu], columns=_CANCEL_ORDER_COLS)
+    return _cancel_frame_from_order(df)
+
+
+def read_cancel_frames_parquet(root: str, date: str, keys: list[str]) -> dict:
+    """Public batched ``cancel_lookup`` builder — ``{(stock_code, date_str): frame}``.
+
+    ONE filtered ``order`` read for all *keys*, then per-stock in-memory slices —
+    the cancel-stream analogue of :func:`read_deal_sizes_parquet`.  Each returned
+    frame is **byte-identical** to the per-stock :func:`read_cancel_frame_parquet`
+    (same shared builder, same parquet row order), so it swaps in transparently and
+    replaces the per-stock ``order`` rescans that dominated gate runtime (Slice 5C).
+
+    Stocks with no cancels (or no order rows at all) map to an empty cancel frame
+    carrying the column contract — backward-safe, matching the single-stock read.
+    """
+    date = str(date)
+    empty = pd.DataFrame(columns=_CANCEL_EMPTY_COLS)
+    out: dict = {(k, date): empty for k in (keys or [])}
+    if not keys:
+        return out
+
+    secus = [stock_code_to_secu(k) for k in keys]
+    df = _read_stream(root, date, "order", secus, columns=_CANCEL_ORDER_COLS)
+    if df is None or df.empty:
+        return out
+
+    secu_col = pd.to_numeric(df["SecuCode"], errors="coerce").astype("int64")
+    for secu, grp in df.groupby(secu_col, sort=False):
+        code = secu_to_stock_code(int(secu))
+        key = (code, date)
+        if key in out:
+            out[key] = _cancel_frame_from_order(grp)
+    return out
 
 
 # ---------------------------------------------------------------------------

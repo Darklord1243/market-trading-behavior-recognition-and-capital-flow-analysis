@@ -28,6 +28,7 @@ import sys
 
 import numpy as np
 
+import config
 from config import RANDOM_SEED
 from src import aggregate, cluster, ingest, label, model, postprocess
 
@@ -157,8 +158,33 @@ def run_parquet(
         log.warning("[parquet] %d/%d universe codes had no parquet data (omitted)",
                     n_missing, len(stock_codes))
 
-    log.info("[parquet 3/5] Task-1 pattern clustering")
-    patterns = cluster.cluster_patterns(matrix)
+    log.info("[parquet 3/5] Task-1 pattern clustering (method=%s)", config.TASK1_METHOD)
+    task1_trajectories = None
+    task1_method = "euclidean"
+    if config.TASK1_METHOD == "dtw-complete":
+        # P5.7 production path: ONE extra batched snapshot read (mirrors
+        # scripts/validate_pattern_offline.py's score_one_date) — the per-stock
+        # cancel loop inside build_feature_matrix_for_panel is not repeated.
+        from src.ingest_parquet import load_parquet as _load_parquet_snapshot
+        from src.intraday_trajectory import build_trajectories
+
+        present = sorted({str(c) for c in matrix.index.get_level_values("stock_code")})
+        snap = _load_parquet_snapshot(root, date, keys=present)
+        traj_by_key = build_trajectories(snap) if snap is not None and not snap.empty else {}
+        task1_trajectories = {
+            idx: traj_by_key.get((str(idx[0]), str(idx[1])))
+            for idx in matrix.index
+        }
+        if any(v is not None for v in task1_trajectories.values()):
+            task1_method = "dtw-complete"
+        else:
+            log.error(
+                "[parquet] TASK1_METHOD=dtw-complete requested but no trajectories "
+                "could be built (no snapshot rows) — falling back to euclidean for %s",
+                date,
+            )
+            task1_trajectories = None
+    patterns = cluster.cluster_patterns(matrix, trajectories=task1_trajectories, method=task1_method)
 
     log.info("[parquet 4/5] Task-2 weak labels + Stage-3 head (stub)")
     weak = label.weak_label_matrix(matrix)
@@ -247,6 +273,8 @@ Examples:
         help=(
             "If given, package the two output CSVs into a submit.zip at this path "
             "(both files at archive root, no nested folders). "
+            "A bare filename (e.g. 'submit.zip') is written INTO the -o output dir; "
+            "pass a path with a directory to place it elsewhere. "
             "Only valid with --input parquet."
         ),
     )

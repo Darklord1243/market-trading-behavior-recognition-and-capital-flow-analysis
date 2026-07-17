@@ -76,6 +76,45 @@ def test_pack_submit_zip_raises_if_csv_missing(tmp_path):
         pack_submit_zip(out_dir, zip_path)
 
 
+def test_pack_submit_zip_bare_filename_lands_in_out_dir(tmp_path, monkeypatch):
+    """A bare filename zip_path (no directory) must resolve relative to out_dir,
+    NOT the current working directory."""
+    out_dir = str(tmp_path / "out")
+    os.makedirs(out_dir)
+    _make_predict_csv(out_dir)
+    _make_pattern_csv(out_dir)
+
+    # Simulate `main.py --pack submit.zip` run from an unrelated CWD.
+    cwd = tmp_path / "cwd"
+    os.makedirs(cwd)
+    monkeypatch.chdir(cwd)
+
+    returned = pack_submit_zip(out_dir, "submit.zip")
+
+    expected = os.path.join(out_dir, "submit.zip")
+    assert os.path.exists(expected), "bare filename should land the zip inside out_dir"
+    assert os.path.abspath(returned) == os.path.abspath(expected)
+    # Must NOT leak into the current working directory.
+    assert not os.path.exists(os.path.join(str(cwd), "submit.zip")), (
+        "zip leaked into CWD instead of out_dir"
+    )
+
+
+def test_pack_submit_zip_path_with_dir_honored_as_is(tmp_path):
+    """A zip_path containing a directory component is honored verbatim (not
+    re-rooted under out_dir) — backward-compatible with explicit paths."""
+    out_dir = str(tmp_path / "out")
+    os.makedirs(out_dir)
+    _make_predict_csv(out_dir)
+    _make_pattern_csv(out_dir)
+
+    explicit = str(tmp_path / "dist" / "submit.zip")
+    returned = pack_submit_zip(out_dir, explicit)
+
+    assert os.path.abspath(returned) == os.path.abspath(explicit)
+    assert os.path.exists(explicit)
+
+
 def test_pack_submit_zip_contents_readable(tmp_path):
     """ZIP contents must be readable as UTF-8-sig CSVs with the correct columns."""
     out_dir = str(tmp_path / "out")

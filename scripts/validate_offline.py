@@ -230,7 +230,7 @@ def _build_parquet_matrix(
     from src import aggregate
     from src.ingest_parquet import (
         load_parquet,
-        read_cancel_frame_parquet,
+        read_cancel_frames_parquet,        # Slice 5C.1: ONE batch order read
         read_deal_sizes_parquet,           # NEW (B.2)
         read_deal_times_parquet,           # NEW (P3.3)
         read_order_times_parquet,          # NEW (P3.3)
@@ -241,17 +241,18 @@ def _build_parquet_matrix(
     if df is None or df.empty:
         return pd.DataFrame()
 
-    cancel_lookup: dict = {}
-    for code in panel:
-        try:
-            cancel_lookup[(code, str(date))] = read_cancel_frame_parquet(root, date, code)
-        except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "_build_parquet_matrix: cancel read failed for %s/%s: %s",
-                date,
-                code,
-                exc,
-            )
+    # Slice 5C.1: ONE batch `order` read for the whole panel (byte-identical to the
+    # old per-stock read_cancel_frame_parquet loop) — kills the per-stock rescans
+    # that were ~91% of gate wall-clock. Same degrade-to-{} behavior on failure.
+    try:
+        cancel_lookup: dict = read_cancel_frames_parquet(root, date, panel)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "_build_parquet_matrix: batch cancel read failed for %s: %s",
+            date,
+            exc,
+        )
+        cancel_lookup = {}
 
     deal_lookup = read_deal_sizes_parquet(root, date, panel)     # NEW (B.2): one batch deal read
 

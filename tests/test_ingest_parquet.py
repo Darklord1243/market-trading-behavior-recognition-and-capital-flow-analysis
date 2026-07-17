@@ -414,3 +414,105 @@ def test_read_order_times_parquet_missing_stock_is_empty(tmp_path):
     root = write_tiny_parquet(str(tmp_path))
     lk = read_order_times_parquet(root, _DATE, ["000003.SZ"])   # not in fixture
     assert lk[("000003.SZ", _DATE)] == []
+
+
+# ---------------------------------------------------------------------------
+# Slice 5C — read_cancel_frames_parquet: ONE batch `order` read for all keys,
+# per-stock slices byte-identical to per-stock read_cancel_frame_parquet.
+# (gate perf: kills the 91%-of-runtime per-stock order rescans.)
+# ---------------------------------------------------------------------------
+
+def test_read_cancel_frames_parquet_matches_single(tmp_path):
+    """The batch cancel lookup is byte-identical, per stock, to the per-stock read.
+
+    This is the parity contract the whole slice rests on: capital/intention gates
+    must be unchanged, so every frame the batch path returns must .equals() the
+    frame the existing single-stock read_cancel_frame_parquet returns.
+    """
+    from src.ingest_parquet import (
+        read_cancel_frame_parquet,
+        read_cancel_frames_parquet,
+    )
+    root = write_tiny_parquet(str(tmp_path))
+    codes = ["000001.SZ", "000002.SZ", "600000.SH"]
+
+    batch = read_cancel_frames_parquet(root, _DATE, codes)
+
+    for code in codes:
+        single = read_cancel_frame_parquet(root, _DATE, code)
+        assert (code, _DATE) in batch, f"missing {code} in batch lookup"
+        got = batch[(code, _DATE)]
+        assert got.equals(single), (
+            f"batch cancel frame for {code} differs from single read\n"
+            f"batch=\n{got}\nsingle=\n{single}"
+        )
+
+
+def test_read_cancel_frames_parquet_missing_stock_is_empty(tmp_path):
+    """A requested stock with no cancels (or no order rows) maps to an empty frame
+    carrying the cancel-frame column contract — same as the single read."""
+    from src.ingest_parquet import (
+        _CANCEL_EMPTY_COLS,
+        read_cancel_frame_parquet,
+        read_cancel_frames_parquet,
+    )
+    root = write_tiny_parquet(str(tmp_path))
+    lk = read_cancel_frames_parquet(root, _DATE, ["000003.SZ"])  # not in fixture
+    got = lk[("000003.SZ", _DATE)]
+    assert got.empty
+    assert list(got.columns) == _CANCEL_EMPTY_COLS
+    assert got.equals(read_cancel_frame_parquet(root, _DATE, "000003.SZ"))
+
+
+# ---------------------------------------------------------------------------
+# Slice 5C.1 — capital-gate harness (_build_parquet_matrix) wires the batch
+# cancel read: ONE read_cancel_frames_parquet call replaces the per-stock loop,
+# byte-identical to the old per-stock read_cancel_frame_parquet loop.
+# ---------------------------------------------------------------------------
+
+def test_build_parquet_matrix_batches_cancel_reads(tmp_path, monkeypatch):
+    """The gate harness builds cancel_lookup with ONE batch order read, and the
+    lookup it wires into aggregate.build_feature_matrix is byte-identical to the
+    old per-stock read_cancel_frame_parquet loop (frozen-gate parity contract).
+    """
+    harness = _import_harness()
+    root = write_tiny_parquet(str(tmp_path))
+    labeled, universe = ["000001.SZ"], ["000001.SZ", "600000.SH"]
+    panel = harness._panel_keys(labeled, universe)
+
+    from src import aggregate, ingest_parquet
+
+    # Spy 1: count batch cancel reads (0 before the slice, exactly 1 after).
+    calls = {"batch": 0}
+    real_batch = ingest_parquet.read_cancel_frames_parquet
+
+    def spy_batch(*a, **k):
+        calls["batch"] += 1
+        return real_batch(*a, **k)
+
+    monkeypatch.setattr(ingest_parquet, "read_cancel_frames_parquet", spy_batch)
+
+    # Spy 2: capture the cancel_lookup actually wired into the feature matrix.
+    captured = {}
+    real_bfm = aggregate.build_feature_matrix
+
+    def spy_bfm(df, **kwargs):
+        captured["cancel_lookup"] = kwargs.get("cancel_lookup")
+        return real_bfm(df, **kwargs)
+
+    monkeypatch.setattr(aggregate, "build_feature_matrix", spy_bfm)
+
+    harness._build_parquet_matrix(root, _DATE, labeled, universe)
+
+    # Wiring: exactly one batch order read replaces the per-stock rescan loop.
+    assert calls["batch"] == 1, f"expected 1 batch cancel read, got {calls['batch']}"
+
+    # Byte parity: harness cancel_lookup == old per-stock read_cancel_frame_parquet loop.
+    reference = {
+        (code, _DATE): ingest_parquet.read_cancel_frame_parquet(root, _DATE, code)
+        for code in panel
+    }
+    got = captured["cancel_lookup"]
+    assert set(got) == set(reference), f"key set differs: {set(got) ^ set(reference)}"
+    for key in reference:
+        assert got[key].equals(reference[key]), f"cancel frame mismatch for {key}"

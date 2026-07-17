@@ -15,7 +15,18 @@ import pytest
 from sklearn.metrics import silhouette_score
 
 import config
-from src.cluster import cluster_patterns, _sweep_k
+from src.cluster import (
+    cluster_patterns,
+    _sweep_k,
+    _sweep_k_constrained,
+    _dtw_distance,
+    _dtw_distance_matrix,
+    _merge_singletons,
+    _dtw_complete_sweep,
+    _assign_traj_names,
+    score_day,
+)
+from src.intraday_trajectory import build_trajectory, SUMMARY_COLS
 
 
 # ---------------------------------------------------------------------------
@@ -450,3 +461,641 @@ def test_naming_guarantees_two_labels_when_k_ge_2():
         "When two clusters share the same primary dominant feature, the tie-break "
         "must reassign one to its secondary-axis label."
     )
+
+
+# ===========================================================================
+# Slice-1 (P5): metric alignment — DTW / Wasserstein + trajectory enrichment
+# ===========================================================================
+
+
+def test_dtw_identical_zero_shifted_positive():
+    """DTW of a series with itself is 0; DTW of a series vs its time-shift is > 0."""
+    rng = np.random.default_rng(1)
+    a = rng.normal(size=(30, 3))
+    b = np.roll(a, shift=5, axis=0)  # time-shifted copy
+    assert _dtw_distance(a, a) == 0.0
+    assert _dtw_distance(a, b) > 0.0
+    # DTW is symmetric.
+    assert abs(_dtw_distance(a, b) - _dtw_distance(b, a)) < 1e-9
+
+
+def _make_shape_group(kind: str, n_ticks: int = 120):
+    """Snapshot-style frame whose intraday turnover SHAPE encodes `kind`."""
+    third = n_ticks // 3
+    if kind == "front":
+        amt = [10.0] * third + [0.2] * (n_ticks - third)
+    elif kind == "back":
+        amt = [0.2] * (n_ticks - third) + [10.0] * third
+    else:  # uniform
+        amt = [3.0] * n_ticks
+    price = [10.0 + 0.001 * i for i in range(n_ticks)]
+    px = pd.Series(price, dtype=float)
+    return pd.DataFrame(
+        {
+            "stock_code": "X",
+            "transaction_date": "20260616",
+            "tick_amount": amt,
+            "totalbidvolume": [100.0] * n_ticks,
+            "totalaskvolume": [100.0] * n_ticks,
+            "price": px,
+            "price_change": px.diff().fillna(0.0),
+        }
+    )
+
+
+def _enrichment_fixture(rng):
+    """3 groups whose DAILY aggregate is ~pure noise but whose intraday SHAPE
+    cleanly separates them (front / back / uniform turnover).
+
+    Returns (matrix, trajectories) keyed on a shared RangeIndex.
+    """
+    n_per = 20
+    shapes = ["front", "back", "uniform"]
+    daily_cols = [
+        "oss_mega_amount_pct", "oss_large_amount_pct", "oss_small_amount_pct",
+        "ap_active_buy_pct", "ap_active_net_direction", "pi_time_concentration",
+    ]
+    rows, trajs = [], {}
+    ridx = 0
+    for kind in shapes:
+        for _ in range(n_per):
+            # Daily features: identical distribution across all groups (noise).
+            rows.append({c: float(rng.uniform(0.0, 1.0)) for c in daily_cols})
+            trajs[ridx] = build_trajectory(_make_shape_group(kind), n_bins=30)
+            ridx += 1
+    matrix = pd.DataFrame(rows)
+    return matrix, trajs
+
+
+def test_enrichment_beats_euclidean_only_silhouette():
+    """When daily features are noise but intraday shape carries the structure,
+    trajectory-enriched clustering must score a strictly higher silhouette than
+    daily-only Euclidean clustering, and report non-trivial Wasserstein/DTW.
+    """
+    rng = np.random.default_rng(7)
+    matrix, trajs = _enrichment_fixture(rng)
+
+    daily_only = score_day(matrix, trajectories=None, k_range=(2, 5))
+    enriched = score_day(matrix, trajectories=trajs, k_range=(2, 5))
+
+    assert enriched["silhouette"] > daily_only["silhouette"], (
+        f"enriched silhouette {enriched['silhouette']:.4f} must beat daily-only "
+        f"{daily_only['silhouette']:.4f} when structure lives in intraday shape"
+    )
+    assert enriched["wasserstein_sep"] > 0.0
+    assert enriched["dtw_sep"] > 0.0
+    assert enriched["best_k"] >= 2
+
+
+def test_score_day_reports_required_components():
+    """score_day exposes every per-day component the offline harness reports."""
+    rng = np.random.default_rng(11)
+    matrix, trajs = _enrichment_fixture(rng)
+    d = score_day(matrix, trajectories=trajs, k_range=(2, 5))
+    for key in (
+        "best_k", "silhouette", "silhouette_daily", "ch",
+        "wasserstein_sep", "dtw_sep", "n_clusters", "degenerate",
+    ):
+        assert key in d, f"score_day missing component {key!r}"
+
+
+def test_trajectories_none_is_byte_identical():
+    """Passing trajectories=None must reproduce the no-arg (daily-only) output
+    exactly — the production main.py path is unchanged this slice.
+    """
+    rng = np.random.default_rng(3)
+    df = _make_blobs(n_per_cluster=15, n_clusters=3, rng=rng)
+    a = cluster_patterns(df, k_range=(2, 5))
+    b = cluster_patterns(df, trajectories=None, k_range=(2, 5))
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_enriched_output_has_required_columns_and_labels():
+    """cluster_patterns with trajectories keeps the P5.1b contract:
+    required columns, index preserved, ≥2 distinct labels when K≥2.
+    """
+    rng = np.random.default_rng(5)
+    matrix, trajs = _enrichment_fixture(rng)
+    result = cluster_patterns(matrix, trajectories=trajs, k_range=(2, 5))
+    assert list(result.columns) == ["pattern_type", "pattern_explanation"]
+    assert list(result.index) == list(matrix.index)
+    assert result["pattern_type"].nunique() >= 2
+    # No trajectory-summary column should surface in the human-facing explanation.
+    for expl in result["pattern_explanation"]:
+        assert "traj_" not in expl
+
+
+# ===========================================================================
+# Slice-4 (P5): clustering ON a precomputed DTW distance (Slice 1b)
+# docs/hypotheses/p5-task1-dtw-precomputed.md
+# ===========================================================================
+
+
+def test_dtw_distance_matrix_symmetric_zero_diagonal():
+    """_dtw_distance_matrix returns a symmetric, zero-diagonal (n,n) matrix whose
+    off-diagonal entries are > 0 for distinct trajectories and 0 for identical ones.
+    """
+    front = build_trajectory(_make_shape_group("front"), n_bins=30)
+    back = build_trajectory(_make_shape_group("back"), n_bins=30)
+    traj_arr = np.stack([front, back, front.copy()])  # rows 0 and 2 identical
+    D = _dtw_distance_matrix(traj_arr)
+
+    assert D.shape == (3, 3)
+    assert np.allclose(np.diag(D), 0.0), "diagonal must be zero"
+    assert np.allclose(D, D.T), "distance matrix must be symmetric"
+    assert D[0, 1] > 0.0, "distinct shapes must have positive DTW distance"
+    assert D[0, 2] == 0.0, "identical trajectories must have zero DTW distance"
+
+
+def _shape_cluster_fixture(rng):
+    """3 groups whose intraday SHAPE cleanly separates them (front/back/uniform).
+
+    Daily features are pure noise (so a Euclidean daily fit cannot find the
+    structure); the DTW distance between full trajectories can. Returns
+    (matrix, trajectories) on a shared RangeIndex.
+    """
+    n_per = 20
+    shapes = ["front", "back", "uniform"]
+    daily_cols = [
+        "oss_mega_amount_pct", "oss_large_amount_pct", "oss_small_amount_pct",
+        "ap_active_buy_pct", "ap_active_net_direction", "pi_time_concentration",
+    ]
+    rows, trajs = [], {}
+    ridx = 0
+    for kind in shapes:
+        for _ in range(n_per):
+            rows.append({c: float(rng.uniform(0.0, 1.0)) for c in daily_cols})
+            trajs[ridx] = build_trajectory(_make_shape_group(kind), n_bins=30)
+            ridx += 1
+    return pd.DataFrame(rows), trajs
+
+
+def test_dtw_precomputed_beats_random_silhouette():
+    """Clustering on the DTW distance recovers the 3 shape groups: the resulting
+    DTW-space silhouette must strongly beat a random labeling on the same matrix.
+
+    A stub that returns arbitrary labels (or K=1) fails this.
+    """
+    from sklearn.metrics import silhouette_score
+
+    rng = np.random.default_rng(7)
+    matrix, trajs = _shape_cluster_fixture(rng)
+
+    d = score_day(matrix, trajectories=trajs, k_range=(2, 5), method="dtw_precomputed")
+
+    # Rebuild the DTW matrix independently to score a random baseline in the same space.
+    traj_arr = np.stack([trajs[i] for i in range(len(matrix))])
+    D = _dtw_distance_matrix(traj_arr)
+    rand_labels = np.random.default_rng(0).integers(0, d["best_k"], len(matrix))
+    rand_sil = silhouette_score(D, rand_labels, metric="precomputed")
+
+    assert d["best_k"] >= 2
+    assert not d["degenerate"], f"unexpected degenerate clustering: {d['cluster_sizes']}"
+    assert d["silhouette"] > rand_sil, (
+        f"DTW-precomputed silhouette {d['silhouette']:.4f} must beat random "
+        f"labeling {rand_sil:.4f} when structure lives in intraday shape"
+    )
+    # Clean shapes → near-perfect recovery; sanity floor well above the Euclidean tier.
+    assert d["silhouette"] > 0.5
+
+
+def test_score_day_dtw_reports_required_components():
+    """score_day(method='dtw_precomputed') exposes every component the harness prints,
+    plus a non-stub Wasserstein/DTW separation.
+    """
+    rng = np.random.default_rng(11)
+    matrix, trajs = _shape_cluster_fixture(rng)
+    d = score_day(matrix, trajectories=trajs, k_range=(2, 5), method="dtw_precomputed")
+    for key in (
+        "best_k", "silhouette", "silhouette_daily", "ch",
+        "wasserstein_sep", "dtw_sep", "n_clusters", "cluster_sizes", "degenerate",
+    ):
+        assert key in d, f"score_day missing component {key!r}"
+    assert d["wasserstein_sep"] > 0.0
+    assert d["dtw_sep"] > 0.0
+
+
+def test_score_day_method_default_is_euclidean():
+    """method defaults to 'euclidean' → byte-identical to the pre-Slice-4 call, so
+    every existing caller and the production path are untouched.
+    """
+    rng = np.random.default_rng(11)
+    matrix, trajs = _shape_cluster_fixture(rng)
+    default = score_day(matrix, trajectories=trajs, k_range=(2, 5))
+    euclid = score_day(matrix, trajectories=trajs, k_range=(2, 5), method="euclidean")
+    assert default == euclid
+
+
+def test_score_day_dtw_requires_trajectories():
+    """The DTW path needs trajectories; asking for it without them fails loud
+    (never silently emits a partial Task-1 number, falsification §4 metric-stub).
+    """
+    rng = np.random.default_rng(1)
+    matrix, _ = _shape_cluster_fixture(rng)
+    with pytest.raises(ValueError):
+        score_day(matrix, trajectories=None, k_range=(2, 5), method="dtw_precomputed")
+
+
+# ===========================================================================
+# Slice-6 (P5): constraint-first (balance) Euclidean K-sweep
+# docs/hypotheses/p5-task1-constrained-ksweep.md
+# ===========================================================================
+
+
+def _sizes_at(X: np.ndarray, k: int) -> list[int]:
+    """Sorted KMeans cluster sizes at *k* (helper for constrained-sweep tests)."""
+    from sklearn.cluster import KMeans
+
+    if k < 2:
+        return [X.shape[0]]
+    labels = KMeans(n_clusters=k, random_state=config.RANDOM_SEED, n_init=10).fit_predict(X)
+    return sorted(np.unique(labels, return_counts=True)[1].tolist())
+
+
+def test_constrained_rejects_singleton_k_legacy_picks():
+    """Planted 3 balanced blobs + one moderate outlier: legacy argmax-silhouette
+    isolates the outlier as a SINGLETON (K=4 → [1,20,20,20]); the constrained
+    sweep (min_size=2) rejects every singleton K and picks the balanced K=3
+    ([20,20,21]).  A stub that ignores balance would return the singleton K.
+    """
+    rng = np.random.default_rng(0)
+    parts = []
+    for c in range(3):
+        centre = np.zeros(9)
+        centre[c] = 4.0
+        parts.append(rng.normal(centre, 0.05, size=(20, 9)))
+    outlier = np.full((1, 9), 2.0)  # moderate: isolable at K=4, absorbed at K=3
+    X = np.vstack(parts + [outlier])  # n = 61
+
+    k_legacy = _sweep_k(X, k_range=(2, 6))
+    k_con, info = _sweep_k_constrained(X, k_range=(2, 6), min_size=2, max_share=0.95)
+
+    # Legacy's winning partition contains a singleton (the isolated outlier).
+    assert min(_sizes_at(X, k_legacy)) == 1, (
+        f"fixture broken: legacy K={k_legacy} sizes={_sizes_at(X, k_legacy)} has no singleton"
+    )
+    # Constrained never returns a partition with a cluster smaller than min_size.
+    con_sizes = _sizes_at(X, k_con)
+    assert min(con_sizes) >= 2, f"constrained K={k_con} kept a singleton: {con_sizes}"
+    assert k_con != k_legacy, "constrained must diverge from the singleton-isolating legacy K"
+    assert info["feasible_k_count"] >= 1
+    assert info["rejected_reason"] is None
+
+
+def test_constrained_rejects_giant_cluster():
+    """A 7-point blob + a 3-point blob: legacy picks K=2 ([3,7], max share 0.70);
+    the constrained sweep (max_share=0.60) rejects that giant-cluster K and picks
+    the balanced K=3 ([3,3,4], max share 0.40).
+    """
+    rng = np.random.default_rng(1)
+    b0 = rng.normal(np.zeros(9), 0.01, size=(7, 9))
+    b1 = rng.normal(np.array([5.0] + [0.0] * 8), 0.01, size=(3, 9))
+    X = np.vstack([b0, b1])  # n = 10
+
+    k_legacy = _sweep_k(X, k_range=(2, 3))
+    k_con, info = _sweep_k_constrained(X, k_range=(2, 3), min_size=2, max_share=0.60)
+
+    n = X.shape[0]
+    assert max(_sizes_at(X, k_legacy)) / n > 0.60, (
+        f"fixture broken: legacy K={k_legacy} has no >60% cluster"
+    )
+    con_sizes = _sizes_at(X, k_con)
+    assert max(con_sizes) / n <= 0.60, f"constrained K={k_con} kept a >60% cluster: {con_sizes}"
+    assert k_con != k_legacy
+    assert info["feasible_k_count"] >= 1
+
+
+def test_constrained_all_k_rejected_returns_one():
+    """Three mutually-distant points, k_range=(2,2): the only K=2 partition is
+    [2,1] (a singleton), which min_size=2 rejects → no feasible K → fall back to
+    K=1 with a recorded rejected_reason (the §4 no-feasible-K falsifier signal).
+    """
+    X = np.array(
+        [[0.0] * 9, [5.0] + [0.0] * 8, [0.0, 5.0] + [0.0] * 7], dtype=float
+    )
+    k_con, info = _sweep_k_constrained(X, k_range=(2, 2), min_size=2, max_share=0.95)
+    assert k_con == 1
+    assert info["feasible_k_count"] == 0
+    assert info["rejected_reason"] is not None
+
+
+def test_constrained_vacuous_matches_legacy():
+    """With min_size=1 and max_share=1.0 the balance rejections never fire, so the
+    constrained sweep reduces to legacy argmax-silhouette and MUST return the same
+    K (regression guard: constrained is a strict superset-restriction of legacy).
+    """
+    rng = np.random.default_rng(0)
+    df = _make_blobs(n_per_cluster=25, n_clusters=3, rng=rng)
+    k_legacy = _sweep_k(df.values, k_range=(2, 6))
+    k_con, _ = _sweep_k_constrained(df.values, k_range=(2, 6), min_size=1, max_share=1.0)
+    assert k_con == k_legacy
+
+
+def test_constrained_defaults_from_config():
+    """_sweep_k_constrained with no min_size/max_share uses the config globals."""
+    assert hasattr(config, "TASK1_MIN_CLUSTER_SIZE")
+    assert hasattr(config, "TASK1_MAX_CLUSTER_SHARE")
+    rng = np.random.default_rng(4)
+    df = _make_blobs(n_per_cluster=20, n_clusters=3, rng=rng)
+    # Explicit config values must match the no-arg call.
+    k_default, _ = _sweep_k_constrained(df.values, k_range=(2, 6))
+    k_explicit, _ = _sweep_k_constrained(
+        df.values,
+        k_range=(2, 6),
+        min_size=config.TASK1_MIN_CLUSTER_SIZE,
+        max_share=config.TASK1_MAX_CLUSTER_SHARE,
+    )
+    assert k_default == k_explicit
+
+
+def _named_blobs(n_per_cluster: int, n_clusters: int, rng: np.random.Generator) -> pd.DataFrame:
+    """Balanced blobs with real feature names (for score_day daily-matrix tests)."""
+    return _make_blobs(n_per_cluster=n_per_cluster, n_clusters=n_clusters, rng=rng)
+
+
+def test_score_day_constrained_reports_balance_diagnostics():
+    """score_day(ksweep='constrained') reports the balance diagnostics and yields a
+    non-degenerate partition on balanced blobs (every cluster ≥ min_size).
+    """
+    rng = np.random.default_rng(0)
+    matrix = _named_blobs(n_per_cluster=20, n_clusters=3, rng=rng)
+    d = score_day(matrix, trajectories=None, k_range=(2, 6), ksweep="constrained")
+    for key in (
+        "best_k", "silhouette", "silhouette_daily", "ch",
+        "n_clusters", "cluster_sizes", "degenerate",
+        "feasible_k_count", "rejected_reason",
+    ):
+        assert key in d, f"score_day(constrained) missing component {key!r}"
+    assert not d["degenerate"], f"unexpected degenerate partition: {d['cluster_sizes']}"
+    assert min(d["cluster_sizes"]) >= config.TASK1_MIN_CLUSTER_SIZE
+    assert d["feasible_k_count"] >= 1
+    assert d["rejected_reason"] is None
+
+
+def test_score_day_ksweep_default_is_legacy():
+    """ksweep defaults to 'legacy' → byte-identical to the pre-Slice-6 call, so the
+    production submit path and every existing caller are untouched.
+    """
+    rng = np.random.default_rng(3)
+    df = _make_blobs(n_per_cluster=15, n_clusters=3, rng=rng)
+    default = score_day(df, trajectories=None, k_range=(2, 5))
+    legacy = score_day(df, trajectories=None, k_range=(2, 5), ksweep="legacy")
+    assert default == legacy
+
+
+def test_score_day_constrained_silhouette_le_legacy():
+    """§2.2 invariant: constrained selects argmax silhouette over a SUBSET of the K
+    legacy ranks, so its reported silhouette can never exceed the legacy silhouette
+    on the same daily matrix (pointwise ≤).
+    """
+    rng = np.random.default_rng(0)
+    matrix = _named_blobs(n_per_cluster=20, n_clusters=3, rng=rng)
+    d_leg = score_day(matrix, trajectories=None, k_range=(2, 6), ksweep="legacy")
+    d_con = score_day(matrix, trajectories=None, k_range=(2, 6), ksweep="constrained")
+    assert d_con["silhouette"] <= d_leg["silhouette"] + 1e-9
+
+
+# ===========================================================================
+# P5.7: Task-1 production path — DTW complete-linkage (config-gated)
+# docs/hypotheses/competitive-gap-audit-20260703-fable5.md §6
+# ===========================================================================
+
+
+def test_merge_singletons_relabels_to_nearest_cluster():
+    """A singleton cluster must be reassigned to its nearest OTHER cluster (by
+    mean precomputed distance); no cluster smaller than min_size remains after.
+
+    3 well-separated blobs (5 points each) + 1 singleton planted unambiguously
+    close to blob 1 (centred at (5,5)) and far from blobs 0/2. A stub that
+    ignores distance (e.g. always merges into cluster 0) fails this test.
+    """
+    from scipy.spatial.distance import cdist
+
+    rng = np.random.default_rng(0)
+    c0 = rng.normal(0.0, 0.05, size=(5, 2))
+    c1 = rng.normal(5.0, 0.05, size=(5, 2))
+    c2 = rng.normal(10.0, 0.05, size=(5, 2))
+    singleton = np.array([[5.1, 4.9]])  # unambiguously near c1's centroid
+    X = np.vstack([c0, c1, c2, singleton])
+    D = cdist(X, X)
+    labels = np.array([0] * 5 + [1] * 5 + [2] * 5 + [3])  # label 3 = the singleton
+
+    merged = _merge_singletons(labels, D, min_size=2)
+
+    sizes = np.unique(merged, return_counts=True)[1]
+    assert min(sizes) >= 2, f"singleton not merged: sizes={sizes}"
+    assert merged[-1] == 1, (
+        f"expected the singleton (nearest to cluster 1's centroid) merged into "
+        f"cluster 1, got {merged[-1]}"
+    )
+
+
+def test_dtw_complete_sweep_recovers_shape_clusters_non_degenerate():
+    """Complete-linkage sweep on 3 clearly DTW-separated shape groups (front /
+    back / uniform intraday turnover) recovers a non-degenerate partition:
+    K>=3, no cluster below TASK1_MIN_CLUSTER_SIZE, max share within
+    TASK1_MAX_CLUSTER_SHARE, and strongly positive DTW-space silhouette.
+    """
+    rng = np.random.default_rng(7)
+    matrix, trajs = _shape_cluster_fixture(rng)
+    traj_arr = np.stack([trajs[i] for i in range(len(matrix))])
+    D = _dtw_distance_matrix(traj_arr)
+
+    best_k, info, labels = _dtw_complete_sweep(D, traj_arr, k_range=(2, 8))
+
+    assert best_k >= 3, f"expected K>=3 after merge, got K={best_k}"
+    sizes = np.unique(labels, return_counts=True)[1]
+    assert min(sizes) >= config.TASK1_MIN_CLUSTER_SIZE, f"singleton survived: {sizes}"
+    assert max(sizes) / len(matrix) <= config.TASK1_MAX_CLUSTER_SHARE, (
+        f"cluster share exceeds config limit: sizes={sizes}"
+    )
+    assert info["silhouette"] > 0.15, (
+        f"DTW-complete silhouette {info['silhouette']:.4f} must clear the +0.15 gate"
+    )
+
+
+def test_dtw_complete_naming_yields_diverse_pattern_types():
+    """cluster_patterns(method='dtw-complete') on 3 shape modes (front/back/uniform
+    turnover) yields >=3 distinct pattern_type labels, driven by trajectory-shape
+    summary centroids — NOT the single dominant microstructure feature fallback
+    that collapses to 机构长线配置 55-64% of the time on the legacy path.
+    """
+    rng = np.random.default_rng(7)
+    matrix, trajs = _shape_cluster_fixture(rng)
+    result = cluster_patterns(matrix, trajectories=trajs, method="dtw-complete", k_range=(2, 8))
+
+    unique_labels = result["pattern_type"].unique()
+    assert len(unique_labels) >= 3, (
+        f"Expected >=3 distinct pattern_type labels from trajectory-shape naming, "
+        f"got {len(unique_labels)}: {list(unique_labels)}"
+    )
+    assert list(result.columns) == ["pattern_type", "pattern_explanation"]
+    assert list(result.index) == list(matrix.index)
+    for expl in result["pattern_explanation"]:
+        assert expl and len(expl) <= 200
+
+
+def test_cluster_patterns_method_respects_config(monkeypatch):
+    """cluster_patterns with no explicit `method` reads config.TASK1_METHOD at
+    CALL time (not import time): the default 'euclidean' stays byte-identical to
+    the explicit call, and flipping config.TASK1_METHOD to 'dtw-complete' routes
+    to the DTW trajectory path (which requires trajectories — fails loud without
+    them, per the Slice-4 falsification rule; never emits a partial Task-1 result).
+    """
+    rng = np.random.default_rng(3)
+    df = _make_blobs(n_per_cluster=15, n_clusters=3, rng=rng)
+
+    default_result = cluster_patterns(df, k_range=(2, 5))
+    explicit_euclid = cluster_patterns(df, k_range=(2, 5), method="euclidean")
+    pd.testing.assert_frame_equal(default_result, explicit_euclid)
+
+    monkeypatch.setattr(config, "TASK1_METHOD", "dtw-complete")
+    with pytest.raises(ValueError):
+        cluster_patterns(df, k_range=(2, 5))
+
+
+def test_cluster_patterns_dtw_complete_requires_trajectories():
+    """Explicit method='dtw-complete' without trajectories fails loud (never a
+    silent fallback to euclidean, never a partial/degenerate Task-1 emission).
+    """
+    rng = np.random.default_rng(3)
+    df = _make_blobs(n_per_cluster=15, n_clusters=3, rng=rng)
+    with pytest.raises(ValueError):
+        cluster_patterns(df, k_range=(2, 5), method="dtw-complete", trajectories=None)
+
+
+def test_cluster_patterns_euclidean_default_unaffected_by_dtw_k_range():
+    """Legacy euclidean path must stay byte-identical regardless of the new
+    TASK1_DTW_K_RANGE constant — it must never leak into the euclidean sweep.
+    """
+    rng = np.random.default_rng(3)
+    df = _make_blobs(n_per_cluster=15, n_clusters=3, rng=rng)
+    a = cluster_patterns(df, k_range=(2, 5), method="euclidean")
+    b = cluster_patterns(df, k_range=(2, 5))
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_score_day_dtw_complete_reports_required_components():
+    """score_day(method='dtw-complete') exposes every component the offline
+    harness prints, recovers a non-degenerate 3-shape partition, and reports a
+    strongly positive DTW-space silhouette (the acceptance-gate metric).
+    """
+    rng = np.random.default_rng(7)
+    matrix, trajs = _shape_cluster_fixture(rng)
+    d = score_day(matrix, trajectories=trajs, k_range=(2, 8), method="dtw-complete")
+    for key in (
+        "best_k", "silhouette", "silhouette_daily", "ch",
+        "wasserstein_sep", "dtw_sep", "n_clusters", "cluster_sizes", "degenerate",
+    ):
+        assert key in d, f"score_day(dtw-complete) missing component {key!r}"
+    assert d["best_k"] >= 3
+    assert not d["degenerate"], f"unexpected degenerate clustering: {d['cluster_sizes']}"
+    assert d["silhouette"] > 0.15
+
+
+def test_score_day_dtw_complete_requires_trajectories():
+    """The dtw-complete path needs trajectories; asking without them fails loud."""
+    rng = np.random.default_rng(1)
+    matrix, _ = _shape_cluster_fixture(rng)
+    with pytest.raises(ValueError):
+        score_day(matrix, trajectories=None, k_range=(2, 8), method="dtw-complete")
+
+
+def test_score_day_method_default_still_euclidean_with_dtw_complete_available():
+    """score_day's literal default 'euclidean' is unchanged now that 'dtw-complete'
+    is an accepted method value — regression guard against a default-flip typo.
+    """
+    rng = np.random.default_rng(11)
+    matrix, trajs = _shape_cluster_fixture(rng)
+    default = score_day(matrix, trajectories=trajs, k_range=(2, 5))
+    euclid = score_day(matrix, trajectories=trajs, k_range=(2, 5), method="euclidean")
+    assert default == euclid
+
+
+# ===========================================================================
+# P5.7b: injective trajectory-shape naming (naming layer only; clustering frozen)
+# ===========================================================================
+
+
+def _traj_summary_frame_from_dict(rows_by_cid: dict[int, dict[str, float]],
+                                  sizes: dict[int, int]) -> tuple[pd.DataFrame, np.ndarray]:
+    """Build a (feats, labels) pair with the requested per-cluster SUMMARY_COLS
+    centroid values and sizes (all members share the centroid value exactly)."""
+    frames, labels = [], []
+    for cid, size in sizes.items():
+        vals = rows_by_cid[cid]
+        block = pd.DataFrame([{c: vals.get(c, 0.0) for c in SUMMARY_COLS} for _ in range(size)])
+        frames.append(block)
+        labels.extend([cid] * size)
+    return pd.concat(frames, ignore_index=True), np.array(labels)
+
+
+def test_assign_traj_names_injective_when_clusters_collide_on_primary_axis():
+    """Three clusters, two of which collide on the SAME dominant trajectory axis
+    (front_load high) — the exact P5.7 failure shape (K=3, n_pat=2).  Injective
+    naming must give all three clusters DISTINCT pattern_type names, and the top
+    pattern_type row-share must equal the max CLUSTER row-share (each name unique).
+    """
+    # Cluster 0 (4 rows) & Cluster 1 (3 rows) both extreme-HIGH on front_load
+    # (collide on primary axis); they differ on their secondary axis.
+    # Cluster 2 (3 rows) extreme-HIGH on turnover_concentration.
+    rows = {
+        0: {"traj_turnover_front_load": 0.95, "traj_turnover_concentration": 0.30,
+            "traj_return_amplitude": 0.30, "traj_turnover_back_load": 0.30},
+        1: {"traj_turnover_front_load": 0.95, "traj_turnover_concentration": 0.30,
+            "traj_return_amplitude": 0.45, "traj_turnover_back_load": 0.30},
+        2: {"traj_turnover_front_load": 0.30, "traj_turnover_concentration": 0.95,
+            "traj_return_amplitude": 0.30, "traj_turnover_back_load": 0.30},
+    }
+    feats, labels = _traj_summary_frame_from_dict(rows, {0: 4, 1: 3, 2: 3})
+
+    name_map = _assign_traj_names(feats, labels)
+    names = [name_map[c][0] for c in np.unique(labels)]
+    assert len(set(names)) == 3, f"expected 3 distinct names, got {names}"
+
+    # Top pattern_type row-share == max cluster row-share (0.4) since names inject.
+    pattern_per_row = pd.Series([name_map[c][0] for c in labels])
+    top_share = pattern_per_row.value_counts().iloc[0] / len(labels)
+    _, sizes = np.unique(labels, return_counts=True)
+    assert abs(top_share - sizes.max() / len(labels)) < 1e-9
+    assert top_share <= 0.65
+    # Explanations non-empty, quantitatively grounded, ≤200 chars.
+    for c in np.unique(labels):
+        assert name_map[c][1] and len(name_map[c][1]) <= 200
+
+
+def test_assign_traj_names_all_distinct_up_to_k8():
+    """8 clusters each extreme (alternating high/low) on a distinct axis get 8
+    distinct names — the injective lexicon covers the full K=8 sweep ceiling.
+    """
+    axes = SUMMARY_COLS  # 6 axes
+    rows, sizes = {}, {}
+    # 8 clusters: 6 high-on-each-axis + 2 low-on-two-axes (opposed names).
+    specs = [
+        (axes[0], +1), (axes[1], +1), (axes[2], +1), (axes[3], +1),
+        (axes[4], +1), (axes[5], +1), (axes[0], -1), (axes[2], -1),
+    ]
+    for cid, (axis, sign) in enumerate(specs):
+        base = {c: 0.5 for c in SUMMARY_COLS}
+        base[axis] = 0.95 if sign > 0 else 0.05
+        rows[cid] = base
+        sizes[cid] = 5
+    feats, labels = _traj_summary_frame_from_dict(rows, sizes)
+    name_map = _assign_traj_names(feats, labels)
+    names = [name_map[c][0] for c in np.unique(labels)]
+    assert len(set(names)) == 8, f"expected 8 distinct names, got {sorted(set(names))}"
+
+
+def test_dtw_complete_naming_ge3_distinct_and_top_share_le_maxcluster():
+    """End-to-end on the 3-shape fixture: cluster_patterns(dtw-complete) yields
+    n_pattern_type == n_clusters (>=3) and top pattern_type share <= max cluster
+    share — the pre-registered P5.7b re-gate contract.
+    """
+    rng = np.random.default_rng(7)
+    matrix, trajs = _shape_cluster_fixture(rng)
+    result = cluster_patterns(matrix, trajectories=trajs, method="dtw-complete", k_range=(2, 8))
+
+    vc = result["pattern_type"].value_counts()
+    assert vc.shape[0] >= 3, f"expected >=3 distinct pattern_type, got {vc.to_dict()}"
+    top_share = vc.iloc[0] / len(result)
+    assert top_share <= 0.65
