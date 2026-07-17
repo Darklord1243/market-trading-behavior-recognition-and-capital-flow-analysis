@@ -104,6 +104,72 @@ replace the examples with real, cited rows.
   `<20260701` → `data/202606`, `20260701` → `data/202607`): capital **FULL n=138 0.6627**, through-0629
   **0.6438 / n=122** (floor held, byte-identical), 0701-only **0.8006 / n=16**; intention **FULL n=129 0.6638**,
   through-0629 **0.6750 / n=115** (floor held, byte-identical), 0701-only **0.5595 / n=14** (2 blank intention).
+- **Batch log.** `20260702`: +16 rows (游资 6 / 量化 6 / 散户 4; `capital_intention` 买入 8 / T0交易 6 /
+  卖出 1 / blank 1), all sourced from 东方财富龙虎榜 per-stock pages (`scripts/lhb_0702_audit_report.md`).
+  CSV total now **n=154** across 11 labeling days (20260616–20260702). Parquet corpus `data/202607`
+  verified for 20260702 (`snapshot_20260702.parquet` present under `十盘档口/20260702/`).
+- **Batch log.** `20260715`: +3 rows (游资 2 @0.75/0.60 both 买入 / 量化 1 @0.38 blank), dual-executor dig
+  (Cursor + Sonnet) audited per auditor guide §6; hit sets matched exactly (6/100 LHB hits — all-SH
+  coverage collapse persists). Rejected: 688433.SH 游资 (one-labels-one-drops borderline; 中信上海溧阳路
+  has no registry entry and no CSV precedent → fails §6.2(b)), 603949.SH (both agree: diffuse desks, no
+  footprint). 605133.SH 量化 accepted over a Cursor drop via §6.2 borderline test (高盛世纪大道 desk-churn,
+  audit-grade sums + 603466/603335 precedents). 600288.SH routed to institutional ledger (机构专用 buy-side
+  one-directional into limit-down, first held case). Name-prior channel: 0 rows proposed by either executor
+  despite 2026-07-16 activation — flagged to human. CSV total now **n=159**.
+- **Batch log addendum.** `20260715` name-prior backfill: root cause of the 0-rows flag confirmed —
+  the Sonnet dig that produced the LHB-channel rows above ran on a **standalone/pre-alignment copy**
+  of the executor prompt (pasted inline, dated to the same schema as `sonnet-lhb-labeling-dig.md` but
+  missing the step-4 non-LHB name-prior channel, the Northbound-strip instruction, and `机构-unresolved`
+  routing — all three landed in the canonical file on 2026-07-16). Backfilled step 4 directly against
+  the canonical spec: fetched live 上证50/沪深300/中证500 constituent lists (sina `vII_NewestComponent`,
+  纳入日期 2026-06-15) and 20260715 daily 振幅/换手 (eastmoney kline API) for the 94 non-LHB universe
+  names; 32 hit an index, kept the top 13 by tier + two-sided turnover (SSE50 ×6 @0.40, CSI300-only ×4
+  @0.35, CSI500 ×3 @0.30), all `NON-LHB name-prior:`-prefixed, intention blank, self-audited against
+  §6.1 (no dupes, cap held, sourced). CSV total now **n=172**. **Process fix for the 0716+ dig:** always
+  hand executors the live file `docs/prompts/sonnet-lhb-labeling-dig.md` (or `fable5-guide-lhb-labeling.md`
+  for the auditor), never a copy frozen in a prior message/session — the two diverge silently otherwise.
+  **Auditor retro-audit (same day):** 13/13 backfill rows pass §6.1 — all in `stock_sample_20260715.xlsx`,
+  disjoint from the 6 LHB hits, `NON-LHB name-prior:` prefix present, tier caps held (≤0.40), intention
+  blank, sources cited, 0 duplicates — rows STAND. Noted as a **single-writer breach**: the executor
+  appended to the gate CSV + batch log directly instead of returning rows for audit; harmless this time,
+  but appends bypassing the auditor are quarantined-by-default going forward. Pooled July panel is now
+  量化-heavy by construction (15/18 rows 量化, 13 of them weak name-priors ≤0.4) — the July gate chiefly
+  measures mega-cap 量化 recall; confidence-weighting bounds their pull.
+- **Batch log.** `20260714`: +2 rows (散户 1 @0.38 卖出 / 量化 1 @0.40 blank), dual-executor dig
+  (Cursor + Sonnet) audited per guide §6; 1 candidate rejected (600844.SH 游资 — buy side not
+  dominated by a registry seat; independent reads disagreed). CSV total now **n=156**.
+  **Coverage collapse is structural, not a rules failure:** the July B-board universes turned
+  all-SH mega-cap/STAR-heavy (`stock_sample_20260714.xlsx` = 100 SH codes) and only **3/100**
+  tripped the LHB at all (both executors independently agree on the hit set). LHB-only digging
+  cannot cover these panels; see guide discussion on pooling days + activating the step-4
+  non-LHB name-prior channel. No 机构-unresolved cases (机构专用 sell-side only, non-dominant);
+  institutional ledger unchanged (0 held).
+- **Batch log.** `20260716`: +16 rows (量化 16, all `NON-LHB name-prior:`, intention blank; SSE50 ×2 @0.40,
+  CSI300/STAR50 ×10 @0.35, CSI500 ×4 @0.30, mean conf 0.344), dual-executor dig (Cursor + Sonnet) audited
+  per guide §6. LHB coverage hit a new floor: **1/100** universe names on the 0716 LHB (hit sets matched),
+  and that one — 600288.SH, 普通席位 diffuse-branch limit-down, no registry/机构专用/desk-churn signature —
+  was independently dropped by both executors (drop stands; see 散户-by-absence note below). Reconciliation:
+  11 rows dual-agreed; 5 single-labeled rows accepted because the other executor corroborated index
+  membership and excluded them only via the ~13-row cap (688271/601615 Cursor-only, 688568/601698/688278
+  Sonnet-only). **New tier decision (auditor): 科创50/STAR50 = 0.35 (CSI300-equivalent); confidence = tier of
+  highest-tier membership** — reconciled Cursor (tiers by non-STAR index) vs Sonnet (STAR50 @0.40): 688568
+  trimmed 0.40→0.35; 688578/688777 set 0.35. **Process flags:** (a) both executor outputs arrived WITHOUT the
+  `PROMPT-VERSION:` echo (required since 2026-07-17); content audit against the live spec showed all
+  2026-07-16 channels present, so outputs accepted — echo discipline must be enforced next run; (b) the live
+  dig spec §4 step 2 has no 散户-by-absence branch, yet the CSV carries that precedent family
+  (600785 0714 / 603271 / 603159) — 600288.SH 0716 matches the profile (max buy seat 13.2%, max sell 21.7%,
+  all ordinary branches, −10% limit-down) but lacks net-amount sums; NOT appended, escalated to human for a
+  spec decision. CSV total now **n=188**; institutional ledger unchanged (1 held). Pooled July panel n=34
+  (量化 31 / 游资 2 / 散户 1) — 量化-heavy by construction, 29/31 量化 are ≤0.40 name-priors.
+- **Batch log addendum.** `20260716` 600288.SH backfill (human-approved): the flagged 散户-by-absence spec gap
+  was resolved — branch added to `sonnet-lhb-labeling-dig.md` §4 step-2 and `fable5-guide-lhb-labeling.md`
+  §3 step-2, both bumped to `PROMPT-VERSION: 2026-07-17b` (ledger change-log updated). Net amounts confirmed
+  via the public eastmoney LHB API (`fetch_lhb_seats.py 600288 2026-07-16`): buy-top5 +4392万 dispersed
+  (中航南昌九洲大街 +1718万 lead ~15% of board flow), sell-top5 −7316万 dispersed (兴业深圳分公司 −2823万
+  lead ~24%), net **−2924万 sell-dominant** into −10.03% limit-down, turnover 2.14%, meta 普通席位卖出占
+  成交额60%; seat lists match both executors' independent reads; no 机构专用/registry seat either side →
+  appended **600288.SH 散户/卖出 @0.38** (600785 0714 precedent). CSV total now **n=189**; 0716 day
+  = 17 rows (LHB 1 / name-prior 16); pooled July panel n=35 (量化 31 / 游资 2 / 散户 2).
 
 ## 7. What happens next (engineering, not your job)
 

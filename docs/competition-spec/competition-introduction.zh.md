@@ -61,6 +61,8 @@
 | A 榜 | 6月9日 — 7月10日 23:59 |
 | B 榜 | 7月13日 — 7月24日 17:00 |
 
+> **B榜现行细则（提交窗口 / 9日 WMA / 评测截止）：** [`../official_guidance/b-board-rules.zh.md`](../official_guidance/b-board-rules.zh.md)
+
 ### 阶段三 — 报告提交
 
 | | |

@@ -309,6 +309,34 @@ def _dominant_feature_to_name(dominant_feat: str, delta_val: float) -> tuple[str
     return FALLBACK_PATTERN_TYPE, explanation
 
 
+def _rich_explanation(base_expl: str, mag_phrase: str) -> str:
+    """Rewrite a cluster-level template explanation into a per-stock one (Board-B).
+
+    Drops the romanized dominant-feature token (``主导特征: ap active sell pct``),
+    which reads as unfinished output to a Chinese interpretability grader, and
+    substitutes *mag_phrase* — this stock's own standing on the cluster's dominant
+    feature.  The qualitative category claim and the ``pattern_type``-coherent
+    feature are preserved; only the parenthetical is localized per stock, so no
+    over-claim and full per-row variance.  Used only when
+    ``config.TASK1_RICH_EXPLANATIONS`` is set.
+    """
+    marker_lex = "（主导特征: "
+    marker_fb = "（实际主导: "
+    if marker_lex in base_expl:
+        head, rest = base_expl.split(marker_lex, 1)
+        tail = rest.split("），", 1)[1] if "），" in rest else ""
+        out = f"{head}（{mag_phrase}），{tail}" if tail else f"{head}（{mag_phrase}）"
+    elif marker_fb in base_expl:
+        head = base_expl.split(marker_fb, 1)[0]
+        out = f"{head}（{mag_phrase}）"
+    else:
+        # Unknown template shape (should not happen): append rather than drop info.
+        out = f"{base_expl}（{mag_phrase}）"
+    if len(out) > 200:
+        out = out[:197] + "..."
+    return out
+
+
 def _sweep_k(X: np.ndarray, k_range: tuple[int, int] | None = None) -> int:
     """Select the best K in k_range using silhouette (tie-break Calinski-Harabasz).
 
@@ -1075,7 +1103,9 @@ def _name_clusters(
     feats: pd.DataFrame,
     labels: np.ndarray,
     name_fn,
-) -> dict[int, tuple[str, str]]:
+    *,
+    return_dominant: bool = False,
+):
     """Centroid-driven, relative-dominance naming (P5.1b) for the legacy
     euclidean path.  *name_fn* maps (dominant_feat, delta_val) ->
     (pattern_type, explanation) — ``_dominant_feature_to_name``.  (The
@@ -1084,6 +1114,12 @@ def _name_clusters(
     Identical control flow to the pre-P5.7 inline block in ``cluster_patterns``
     (verbatim move, not a rewrite) — required for the euclidean path to stay
     byte-identical.
+
+    When ``return_dominant`` is True, also returns ``dom_map: {cid: (feat,
+    delta)}`` — the *final* dominant feature each cluster was named on, tracking
+    the tie-break reassignment below so the rich-explanation path (Board-B) cites
+    the same feature the name is coherent with.  Default False keeps the legacy
+    single-return signature for existing callers/tests.
     """
     n = len(feats)
     col_names = list(feats.columns)
@@ -1105,10 +1141,12 @@ def _name_clusters(
         cluster_info[cid] = (centroid_dict, delta_sorted)
 
     name_map: dict[int, tuple[str, str]] = {}
+    dom_map: dict[int, tuple[str, float]] = {}
     for cid in unique_cids:
         _, delta_sorted = cluster_info[cid]
         dominant_feat, dominant_delta = delta_sorted[0]
         name_map[cid] = name_fn(dominant_feat, dominant_delta)
+        dom_map[cid] = (dominant_feat, dominant_delta)
 
     if len(unique_cids) >= 2:
         axis_idx = 1
@@ -1124,8 +1162,11 @@ def _name_clusters(
             candidates.sort(key=lambda x: x[0], reverse=True)
             _, reassign_cid, feat, dval = candidates[0]
             name_map[reassign_cid] = name_fn(feat, dval)
+            dom_map[reassign_cid] = (feat, dval)
             axis_idx += 1
 
+    if return_dominant:
+        return name_map, dom_map
     return name_map
 
 
@@ -1179,6 +1220,7 @@ def cluster_patterns(
     k_range: tuple[int, int] | None = None,
     trajectories: dict | None = None,
     method: str | None = None,
+    rich_explanations: bool | None = None,
 ) -> pd.DataFrame:
     """Cluster (stock, day) rows and assign an interpretable pattern per row.
 
@@ -1206,6 +1248,12 @@ def cluster_patterns(
         honored).  ``"euclidean"`` (default) is byte-identical to pre-P5.7
         production.  ``"dtw-complete"`` is the trajectory-space production path
         (docs/hypotheses/competitive-gap-audit-20260703-fable5.md §6).
+    rich_explanations : bool, optional (Board-B).
+        Defaults to ``config.TASK1_RICH_EXPLANATIONS`` (read at CALL time).  When
+        True, the euclidean path keeps ``pattern_type`` / clusters byte-identical
+        but rewrites ``pattern_explanation`` per stock (drop romanized feature
+        token; cite same-day percentile on the cluster's dominant feature).  No
+        effect on the ``dtw-complete`` path.
 
     Returns
     -------
@@ -1252,14 +1300,37 @@ def cluster_patterns(
 
     # --- Centroid-driven naming (uses naming_feats, so EXCLUDE + traj_* cols
     #     are invisible to argmax and lexicon matching) ---
-    name_map = _name_clusters(naming_feats, labels, _dominant_feature_to_name)
+    if rich_explanations is None:
+        rich_explanations = config.TASK1_RICH_EXPLANATIONS
 
-    out = pd.DataFrame(
-        {
-            "pattern_type": [name_map[c][0] for c in labels],
-            "pattern_explanation": [name_map[c][1] for c in labels],
-        },
-        index=matrix.index,
-    )
+    if rich_explanations:
+        # Board-B: keep pattern_type / clusters IDENTICAL to the floor; only
+        # rewrite each row's explanation to drop the romanized feature token and
+        # cite this stock's same-day percentile on the cluster's dominant feature.
+        name_map, dom_map = _name_clusters(
+            naming_feats, labels, _dominant_feature_to_name, return_dominant=True
+        )
+        pattern_types = [name_map[c][0] for c in labels]
+        explanations = []
+        for i, cid in enumerate(labels):
+            feat, _delta = dom_map[cid]
+            col = naming_feats[feat].values
+            v = col[i]
+            pct = float((col < v).mean()) if len(col) > 1 else 1.0
+            mag_phrase = f"本股该指标位于同日样本第{round(pct * 100)}百分位"
+            explanations.append(_rich_explanation(name_map[cid][1], mag_phrase))
+        out = pd.DataFrame(
+            {"pattern_type": pattern_types, "pattern_explanation": explanations},
+            index=matrix.index,
+        )
+    else:
+        name_map = _name_clusters(naming_feats, labels, _dominant_feature_to_name)
+        out = pd.DataFrame(
+            {
+                "pattern_type": [name_map[c][0] for c in labels],
+                "pattern_explanation": [name_map[c][1] for c in labels],
+            },
+            index=matrix.index,
+        )
     log.info("pattern distribution: %s", out["pattern_type"].value_counts().to_dict())
     return out

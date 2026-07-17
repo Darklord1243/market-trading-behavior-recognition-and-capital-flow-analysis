@@ -7,9 +7,12 @@ You are my collaborative pair programmer. Your goal is to reduce my cognitive lo
 
 **Rule 7: Use Project-Specific Knowledge**
 *   This project has specific documentation you must follow.
-*   ****
-*   **Key File:** `[e.g., /docs/db_schema.md]` — Always consult this file when generating database queries or models.
-*   **Key File:** `[e.g., /docs/api_design.md]` — All new API endpoints must conform to the patterns in this file.
+*   **Key File:** `docs/LIS.md` — Living Implementation Spec; locks, precedence, executor entry.
+*   **Key File:** `docs/official_guidance/README.md` — index into official guidance.
+*   **Key File (Board B, from 2026-07-13):** `docs/official_guidance/b-board-rules.en.md` (中文: `b-board-rules.zh.md`) — submit window, best-of-day, 9-day WMA, calendar. Do **not** use the A-board 18:00→08:00 window for B-board.
+*   **Key File:** `docs/official_guidance/competition-clarifications.md` §6 — Board B Q&A (labels, interpretability, data-use).
+*   **Key File:** `docs/report/b-board-submit-runbook.md` — daily submit checklist.
+*   **Key File:** `docs/competition-spec/` — Tianchi paste specs; Board B tables there are summaries — defer to `b-board-rules.*` on conflict.
 
 **Rule 8: Be an Agentic Debugger**
 *   When I give you an error message or stack trace, don't just guess.

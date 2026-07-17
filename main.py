@@ -14,6 +14,10 @@ Audit-contract guarantees (brief §9):
 Usage:
     python main.py --input samples/AFAC2026.xlsx -o outputs/
     python main.py --input "data/*.xlsx" -o outputs/ --date 20260507
+    python main.py --input parquet:data/202607 --date 20260713 \\
+                   -o outputs/20260713 --pack submit.zip
+    # auto-picks samples/B_board/stock_sample_20260713.xlsx
+    # (--date = L2/transaction_date; sample filename uses the same trading day)
     python main.py --input parquet:data/202606 --universe samples/stock-samples.xlsx \\
                    --date 20260623 -o outputs/20260623 --pack submit.zip
 """
@@ -31,6 +35,7 @@ import numpy as np
 import config
 from config import RANDOM_SEED
 from src import aggregate, cluster, ingest, label, model, postprocess
+from src.pipeline_parquet import resolve_default_universe
 
 log = logging.getLogger("afac2026")
 
@@ -226,7 +231,13 @@ Examples:
   # xlsx path (backward-compatible):
   python main.py --input samples/AFAC2026.xlsx -o outputs/
 
-  # parquet corpus (competition submission):
+  # Board B parquet:
+  #   --date = L2 / transaction_date (e.g. 20260713)
+  #   universe auto = samples/B_board/stock_sample_{--date}.xlsx (e.g. 20260713)
+  python main.py --input parquet:data/202607 --date 20260713 \\
+                 -o outputs/20260713 --pack submit.zip
+
+  # Explicit universe (A-board static list or custom):
   python main.py --input parquet:data/202606 \\
                  --universe samples/stock-samples.xlsx \\
                  --date 20260623 \\
@@ -249,7 +260,10 @@ Examples:
         help=(
             "Path to xlsx/CSV listing competition universe codes "
             "(col 股票代码 or stock_code). "
-            "Required (or defaults to samples/stock-samples.xlsx) when --input is parquet."
+            "When omitted for parquet: prefer "
+            "samples/B_board/stock_sample_{--date}.xlsx "
+            "(Board B sample, trading-day filename since 2026-07-15) if present, "
+            "else samples/stock-samples.xlsx."
         ),
     )
     parser.add_argument(
@@ -278,12 +292,28 @@ Examples:
             "Only valid with --input parquet."
         ),
     )
+    parser.add_argument(
+        "--rich-explanations",
+        action="store_true",
+        help=(
+            "Board-B interpretability explore (default OFF): keep pattern_type / "
+            "clusters / Task-2 identical to the euclidean floor, but rewrite each "
+            "pattern_explanation to drop the romanized feature token and cite this "
+            "stock's same-day percentile on the cluster's dominant feature. "
+            "Use for a best-of-day paired A/B vs the floor; not tuned to any board "
+            "score (LIS §3.3)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    if args.rich_explanations:
+        config.TASK1_RICH_EXPLANATIONS = True
+        log.info("[cli] --rich-explanations ON (Board-B per-stock explanation upgrade)")
 
     inp = args.input.strip()
 
@@ -294,13 +324,13 @@ Examples:
         else:
             root = "data/202606"
 
-        universe = args.universe or "samples/stock-samples.xlsx"
         date = args.date
         if not date:
             # Fall back to nightly yesterday
             date = previous_trading_day(_dt.date.today())
             log.warning("--date not supplied; using yesterday=%s", date)
 
+        universe = resolve_default_universe(date, explicit=args.universe)
         result = run_parquet(root, universe, date, args.output, pack_path=args.pack)
     else:
         # xlsx / glob path (original path — backward compatible)

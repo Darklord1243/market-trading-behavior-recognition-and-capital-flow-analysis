@@ -64,6 +64,21 @@ TASK1_MAX_CLUSTER_SHARE = 0.60  # no single cluster may exceed 60% of the panel
 # every internal branch comparison; never an underscore variant.
 TASK1_METHOD: Literal["euclidean", "dtw-complete"] = "euclidean"
 
+# ---------------------------------------------------------------------------
+# Board-B pattern_explanation upgrade (default-OFF; floor preserved).
+# When False (default), pattern_explanation is BYTE-IDENTICAL to the pre-Board-B
+# euclidean production: one cluster-level template per pattern_type, carrying a
+# romanized dominant-feature token (e.g. "主导特征: ap active sell pct").
+# When True (CLI --rich-explanations), the euclidean path keeps pattern_type and
+# clusters UNCHANGED but rewrites each row's explanation to (a) drop the romanized
+# English feature token and (b) cite this stock's own standing on the cluster's
+# dominant feature as a same-day percentile — giving per-row variance without
+# touching Task-1 geometry or Task-2.  Board B is the first board that scores
+# pattern_explanation (docs/official_guidance/competition-clarifications.md §6);
+# this is an interpretability-quality lever, NOT a threshold tuned to any board
+# number (LIS §3.3).  Ship only via a best-of-day paired A/B vs the floor.
+TASK1_RICH_EXPLANATIONS: bool = False
+
 # K-sweep range for the dtw-complete path (P5.7) — intentionally LOW-K and
 # DISTINCT from the legacy K_RANGE=(6,12): trajectory-shape clusters (unlike
 # microstructure feature clusters) are expected to be a small number of
