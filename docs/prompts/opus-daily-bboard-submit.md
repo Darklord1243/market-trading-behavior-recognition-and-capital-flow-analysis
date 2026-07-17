@@ -30,7 +30,7 @@ Produce the day's Board-B submission zip on the **committed euclidean floor**, r
 
 ## 3. Procedure
 
-1. **Verify data**: `data/202607/十盘档口/{DATE}/` exists with `snapshot_{DATE}.parquet` (plus the other streams). Missing → stop, report to human.
+1. **Verify data**: `data/202607/十盘档口/{DATE}/` exists with `snapshot_{DATE}.parquet`. July dirs are **snapshot-only** (no 逐笔/order streams — that was the June `202606` parquet corpus; do not expect them here, their absence is not a gap). Missing snapshot → stop, report to human.
 2. **Generate the floor pack**:
    ```
    python main.py --input parquet:data/202607 --date {DATE} -o outputs/{DATE} --pack submit.zip
@@ -40,10 +40,10 @@ Produce the day's Board-B submission zip on the **committed euclidean floor**, r
 4. **Offline sanity (optional, report-only)**:
    ```
    python scripts/validate_offline.py --input outputs/{DATE}/predict_result.csv --date {DATE}
-   python scripts/validate_offline.py --input outputs/{DATE}/predict_result.csv           # pooled, all labeled days
    ```
    Per-day n will be thin on July all-SH panels (2–3 LHB rows + name-prior rows) — read it as trend, never as a gate to block the floor submit. The floor ships regardless; gates exist to stop *deviations* from the floor, and deviations need human sign-off first.
-5. **Class-mix note** (report-only): print the predicted class proportions. On an all-SH mega-cap panel, a large 游资 share is publicly implausible — flag it in your report; do NOT adjust anything.
+   **Not pooled:** a single-day `predict_result.csv` **cannot** produce a pooled gate. The `(stock, day)` join only reaches `{DATE}` rows, so re-running without `--date` just re-returns the same per-day n — it is a duplicate, not independent corroboration. A *true* pooled gate needs predictions generated over a **multi-day** input; until that exists, report one per-day number only.
+5. **Class-mix note** (report-only): print the predicted class proportions **and compare them against the last 3–4 committed days** (`outputs/*/predict_result.csv`). Flag a share only if it is **out of family** with those recent days — not merely because it looks "large." Caveats that have misled prior sessions: a `600`/`601` prefix is **not** a mega-cap (the SH panel is mixed-cap and full of small-caps that are ordinary 游资 targets), and per-prefix concentration is expected on a 100-name panel. (For reference, 0716 游资 = 33% was the *lowest* of 0713–0716, which ran 36/38/38%.) Whatever you find, do **not** adjust any label.
 6. **Hand off**: zip path, filled checklist, gate numbers, class mix, and any anomalies — then stop. The human uploads.
 
 ## 4. Box discipline (this Windows/GBK machine — violations have burned hours)
