@@ -1,6 +1,6 @@
 # Executor prompt — Board-B LHB `capital_type` labeling (standalone, self-auditing)
 
-`PROMPT-VERSION: 2026-07-16`
+`PROMPT-VERSION: 2026-07-17b`
 
 > **Invoke from this live file path only** (`docs/prompts/sonnet-lhb-labeling-dig.md`) — never from a copy pasted into an earlier session; copies drift silently (0715 incident: a stale copy was missing the name-prior channel, the Northbound strip, and 机构-unresolved routing). **Echo the `PROMPT-VERSION` line verbatim as the first line of your output** so the auditor can detect a stale prompt.
 > Paste this whole file into a fresh **Sonnet / Cursor** window. This is the thin path: **no Fable-5 guide layer** — you both dig AND audit your own output before returning.
@@ -26,8 +26,8 @@ Fill **offline** `capital_type` validation labels for ONE Board-B trading day fr
 
 ## 2. Inputs (the human fills these in)
 
-- `DATE` = ⟦YYYYMMDD⟧ (e.g. `20260713`)
-- `UNIVERSE` = ⟦stock list file⟧ (`samples/B_board/stock_sample_{DATE}.xlsx` — since the platform rename of 2026-07-15 the filename date is the L2 trading day itself; e.g. `stock_sample_20260713.xlsx` for `DATE=20260713`)
+- `DATE` = ⟦20260716⟧ (e.g. `20260713`)
+- `UNIVERSE` = ⟦samples/B_board/stock_sample_{20260716}.xlsx⟧ (`samples/B_board/stock_sample_{DATE}.xlsx` — since the platform rename of 2026-07-15 the filename date is the L2 trading day itself; e.g. `stock_sample_20260713.xlsx` for `DATE=20260713`)
 
 ## 3. Where to look / how to fetch
 
@@ -44,6 +44,7 @@ Fill **offline** `capital_type` validation labels for ONE Board-B trading day fr
    - Known **hot-money 营业部 seat** dominant on buy side **and** single-day surge / 涨停 / 连板 → **游资**, confidence **0.7–0.9**. Dominance means the registry seat leads the stripped buy side — brand-summing two small branches to edge past an unrelated top seat does NOT qualify (0714 reject precedent).
    - **机构专用 (institutional dedicated) seats** dominant → do NOT assign a class and do NOT drop: emit the row with `capital_type=机构-unresolved`, putting seat + 上榜原因 + a turnover note in `notes`. The auditor adjudicates these (guide §3b) and routes unresolved ones to the institutional ledger.
    - Reason/seat explicitly **量化/程序化/高频**, or QFII/broker-desk **two-sided same-branch churn** after the Northbound strip (高盛/摩根大通/中信上海-style desks on both sides; 603335/603466 precedent) → **量化**, confidence **0.3–0.6**.
+   - **散户-by-absence** (added 2026-07-17b): NONE of the above fires AND both top-5 sides are fully dispersed ordinary brokerage branches — no registry 游资 seat, no 机构专用, no QFII/desk churn, max single seat ≲25% of board (top-5 buy+sell) flow → **散户**, confidence **0.3–0.45**. You MUST capture buy/sell top-5 sums + net in `notes`; set `capital_intention` from the net only when clearly one-sided, else blank. Precedents: 600785 0714, 603271/603159, 600288 0716.
 3. **Not on LHB — the name-prior channel (citable public facts only):**
    - **量化 by index/ETF membership**: the name is a constituent of 上证50 / 沪深300 / 中证500 / 科创50 (verify on csindex.com.cn or the stock's eastmoney F10 page) or a top holding of a major ETF, AND the day shows meaningful two-sided turnover (cite 换手率/振幅 from the public post-market quote page) → **量化**, confidence **0.3–0.4** (index-arb / basket / program flow dominates such names). `notes` MUST start with `NON-LHB name-prior:` and name the specific index/ETF membership. `capital_intention` stays **blank** (no day-specific direction evidence).
    - Clear **retail** profile (low attention, low turnover, no seat footprint, citable retail chatter) → **散户**, confidence **0.2–0.3**. Use sparingly.

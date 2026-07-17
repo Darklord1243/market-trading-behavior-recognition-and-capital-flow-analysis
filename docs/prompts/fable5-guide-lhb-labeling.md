@@ -1,6 +1,6 @@
 # Hand-off — Fable 5 as the Board-B LHB label AUDITOR (fresh window per day)
 
-`PROMPT-VERSION: 2026-07-16`
+`PROMPT-VERSION: 2026-07-17b`
 
 > **Invoke from this live file path only** (`docs/prompts/fable5-guide-lhb-labeling.md`), never from a copy frozen in an earlier session — copies drift silently (0715 incident).
 > Paste this entire file + the executor CSV output(s) as the opening message to a fresh **Fable 5** window, one window per labeling day. You are the *auditor/analyst*, not the digger.
@@ -45,6 +45,7 @@ Apply top-down. Stop at the first firing branch. (Executors apply this; you veri
    - Buy side **dominated** by a known hot-money 营业部 seat (registry §3a) **and** single-day surge / 涨停 / 连板 → **游资**, confidence **0.7–0.9**. Dominance = the registry seat leads the stripped buy side. Brand-summing small branches to edge past an unrelated top seat does NOT qualify (0714: 600844 rejected on exactly this).
    - **机构专用 seats dominant** → route to the **§3b 机构 analysis phase**. Never blanket-drop, never coerce into 游资.
    - Explicit **量化/程序化/高频** reason/seat, or QFII/broker-desk **two-sided same-branch churn** after the strip (高盛/摩根大通/中信上海-style; accepted precedents 603335 0616, 603466 0714) → **量化**, confidence **0.3–0.6**.
+   - **散户-by-absence** (added 2026-07-17b, human-approved): none of the above fires AND both top-5 sides are fully dispersed ordinary brokerage branches — no registry 游资 seat, no 机构专用, no QFII/desk churn, max single seat ≲25% of board (top-5 buy+sell) flow → **散户**, confidence **0.3–0.45**. Reject the row if `notes` lacks buy/sell top-5 sums + net; intention from net direction only when clearly one-sided. Precedents: 600785 0714, 603271/603159 family, 600288 0716.
 3. (reserved)
 4. **Not on LHB — name-prior channel (activated 2026-07-16 for the all-SH mega-cap July panels):**
    - Constituent of 上证50/沪深300/中证500/科创50 or major-ETF top holding (checkable on csindex.com.cn / eastmoney F10), with cited two-sided turnover → **量化**, confidence **0.3–0.4** (hard cap 0.4), `notes` prefixed `NON-LHB name-prior:`, intention blank.
