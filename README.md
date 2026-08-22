@@ -1,6 +1,8 @@
 # AFAC2026 — Track 1: Market Participant Trading Behavior Recognition & Capital Flow Analysis
 
-> **Private competition repository.** Do not make public — see Compliance below.
+> **Competition period: 8 Jun – 24 Jul 2026.** This repository was kept private for the
+> duration of the competition, per Compliance item 5 below. The competition has ended
+> and that restriction no longer applies; the repository is public as of August 2026.
 
 ## What this is
 
@@ -63,7 +65,9 @@ never for the label vocabulary.
 2. **No hard-coding** — no per-stock-code label tables, no random fill, no ignoring L2 features.
 3. **No answer-feedback** — the nightly instant score is for *verification only*. Never tune rules/thresholds/models on the published backtest answers.
 4. **Reproducible** — `main.py` recomputes everything from raw L2; fixed seeds; relative paths; output must reconcile with code for the top-15 audit.
-5. **Private repo** — solution sharing is opt-in *after* the competition only.
+5. **Private repo (during the competition)** — solution sharing was opt-in *after* the
+   competition only. Satisfied: the repository stayed private until the competition closed
+   on 2026-07-24, and was published afterwards.
 
 ## Critical engineering gotchas (from the official baseline guide)
 
